@@ -1,5 +1,16 @@
+mod db;
+mod titles;
+
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Mutex;
+use tauri::Manager;
+
+/// Соединение с библиотекой, живущее всё время работы приложения.
+///
+/// Mutex здесь не про многопоточность ради многопоточности: команды Tauri
+/// приходят из разных потоков, а Connection у rusqlite не Sync.
+struct Library(Mutex<rusqlite::Connection>);
 
 /// Ищет исполняемый файл среди каталогов переменной PATH.
 fn which_from_path(name: &str) -> Option<PathBuf> {
@@ -128,11 +139,31 @@ fn list_tracks() -> Result<Vec<String>, String> {
     Ok(paths)
 }
 
+/// Возвращает всю библиотеку из базы, свежие сверху.
+#[tauri::command]
+fn library(state: tauri::State<'_, Library>) -> Result<Vec<db::Track>, String> {
+    let conn = state.0.lock().map_err(|_| "библиотека занята")?;
+    db::all_tracks(&conn)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![download_track, list_tracks])
+        .setup(|app| {
+            let path = app.path().app_data_dir()?.join("omen.db");
+            let conn = db::open(&path)?;
+
+            // Спека: файл, удалённый мимо приложения, не должен пропадать молча.
+            let changed = db::reconcile_with_disk(&conn)?;
+            if changed > 0 {
+                eprintln!("сверка с диском: обновлено записей — {changed}");
+            }
+
+            app.manage(Library(Mutex::new(conn)));
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![download_track, list_tracks, library])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
