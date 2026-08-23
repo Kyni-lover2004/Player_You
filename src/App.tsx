@@ -140,6 +140,7 @@ function App() {
   const [albumTracks, setAlbumTracks] = useState<Track[]>([]);
   const [newAlbum, setNewAlbum] = useState("");
   const [pickingTracks, setPickingTracks] = useState(false);
+  const [renaming, setRenaming] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [theme, setTheme] = useState<ThemeSeed>(() =>
     themeById(localStorage.getItem("omen.theme"))
@@ -216,6 +217,20 @@ function App() {
     try {
       setAlbums(await invoke<Album[]>("create_album", { title }));
       setNewAlbum("");
+    } catch (error) {
+      setStatus({ kind: "error", message: String(error) });
+    }
+  }
+
+  /** Сохраняет новое название альбома. */
+  async function handleRenameAlbum(id: number, title: string) {
+    const trimmed = title.trim();
+    setRenaming(null);
+    if (!trimmed || trimmed === openAlbum?.title) return;
+    try {
+      const updated = await invoke<Album[]>("rename_album", { id, title: trimmed });
+      setAlbums(updated);
+      setOpenAlbum(updated.find((a) => a.id === id) ?? null);
     } catch (error) {
       setStatus({ kind: "error", message: String(error) });
     }
@@ -541,7 +556,27 @@ function App() {
               <button className="mini" onClick={() => setOpenAlbum(null)}>
                 ← Альбомы
               </button>
-              <span className="album-title">{openAlbum.title}</span>
+              {renaming === null ? (
+                <button
+                  className="album-title"
+                  onClick={() => setRenaming(openAlbum.title)}
+                  title="Переименовать"
+                >
+                  {openAlbum.title}
+                </button>
+              ) : (
+                <input
+                  className="edit-input album-rename"
+                  value={renaming}
+                  onChange={(e) => setRenaming(e.target.value)}
+                  onBlur={() => handleRenameAlbum(openAlbum.id, renaming)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleRenameAlbum(openAlbum.id, renaming);
+                    if (e.key === "Escape") setRenaming(null);
+                  }}
+                  autoFocus
+                />
+              )}
             </div>
 
             <div className="album-actions">

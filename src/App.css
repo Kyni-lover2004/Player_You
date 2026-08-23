@@ -760,3 +760,20 @@ button { font-family: inherit; color: inherit; }
 .track,
 .theme,
 .tab { transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease; }
+
+/* Название альбома само по себе кнопка: отдельный карандаш рядом был бы
+   лишним элементом там, где хватает клика по самому названию. */
+button.album-title {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.album-title:hover { background: var(--surface); border-color: var(--border); }
+
+.album-rename { flex: 1; min-width: 0; }
