@@ -15,6 +15,15 @@ export type PlayableTrack = { id: number; missing: boolean };
 
 const deps: Deps = { shuffle: randomShuffle };
 
+const VOLUME_KEY = "omen.volume";
+
+/** Читает сохранённую громкость, отбрасывая мусор из хранилища. */
+function readStoredVolume(): number {
+  if (typeof localStorage === "undefined") return 1;
+  const stored = Number(localStorage.getItem(VOLUME_KEY));
+  return Number.isFinite(stored) && stored >= 0 && stored <= 1 ? stored : 1;
+}
+
 /**
  * Связывает машину состояний с аудиоэлементом.
  *
@@ -32,6 +41,8 @@ export function usePlayer(tracks: PlayableTrack[], sourceFor: (id: number) => st
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [volume, setVolumeState] = useState(readStoredVolume);
+  const [muted, setMuted] = useState(false);
 
   /** Должен ли следующий запуск сразу заиграть. */
   const autoplay = useRef(false);
@@ -85,6 +96,15 @@ export function usePlayer(tracks: PlayableTrack[], sourceFor: (id: number) => st
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.generation, state.currentId]);
 
+  // Громкость живёт на самом элементе: менять её через перерисовку значило бы
+  // дёргать звук на каждом кадре прогресса.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.volume = volume;
+    audio.muted = muted;
+  }, [volume, muted, state.currentId]);
+
   // Список кончился, повтор выключен — останавливаемся.
   useEffect(() => {
     if (!state.atEnd) return;
@@ -136,6 +156,24 @@ export function usePlayer(tracks: PlayableTrack[], sourceFor: (id: number) => st
       const audio = audioRef.current;
       if (audio) audio.currentTime = seconds;
     },
+
+    /** Сдвигает позицию на заданное число секунд, не выходя за границы трека. */
+    nudge: (seconds: number) => {
+      const audio = audioRef.current;
+      if (!audio || !Number.isFinite(audio.duration)) return;
+      audio.currentTime = Math.min(audio.duration, Math.max(0, audio.currentTime + seconds));
+    },
+
+    /** Задаёт громкость и запоминает её до следующего запуска. */
+    setVolume: (next: number) => {
+      const clamped = Math.min(1, Math.max(0, next));
+      setVolumeState(clamped);
+      setMuted(false);
+      localStorage.setItem(VOLUME_KEY, String(clamped));
+    },
+
+    /** Заглушает и возвращает звук, не теряя выставленный уровень. */
+    toggleMute: () => setMuted((on) => !on),
   };
 
   /** Обработчики, которые вешаются на сам элемент audio. */
@@ -162,6 +200,8 @@ export function usePlayer(tracks: PlayableTrack[], sourceFor: (id: number) => st
     queueLength: state.queue.length,
     atEnd: state.atEnd,
     playing,
+    volume,
+    muted,
     position,
     duration,
     setPosition,

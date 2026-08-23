@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { usePlayer } from "./player/usePlayer";
+import { useShortcuts } from "./player/useShortcuts";
+import { SEEK_STEP, VOLUME_STEP } from "./player/shortcuts";
 import {
   THEMES,
   type ThemeSeed,
@@ -175,6 +177,8 @@ function App() {
   const [openError, setOpenError] = useState<number | null>(null);
   const [probing, setProbing] = useState(false);
   const [pending, setPending] = useState<{ link: string; info: PlaylistInfo } | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
 
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -485,6 +489,32 @@ function App() {
     player.controls.seek(value);
   }
 
+  useShortcuts({
+    toggle: player.controls.toggle,
+    seekBack: () => player.controls.nudge(-SEEK_STEP),
+    seekForward: () => player.controls.nudge(SEEK_STEP),
+    prev: player.controls.prev,
+    next: player.controls.next,
+    volumeUp: () => player.controls.setVolume(player.volume + VOLUME_STEP),
+    volumeDown: () => player.controls.setVolume(player.volume - VOLUME_STEP),
+    mute: player.controls.toggleMute,
+    shuffle: player.controls.toggleShuffle,
+    repeat: player.controls.cycleRepeat,
+    search: () => {
+      setView("collection");
+      // Фокус ставим после перерисовки: до неё поля ещё нет в разметке.
+      requestAnimationFrame(() => searchRef.current?.focus());
+    },
+    help: () => setHelpOpen((open) => !open),
+    escape: () => {
+      if (helpOpen) return setHelpOpen(false);
+      if (pending) return setPending(null);
+      if (editingId !== null) return setEditingId(null);
+      if (search) return setSearch("");
+      if (immersive) setImmersive(false);
+    },
+  });
+
   const backdrop = current?.cover_path ? convertFileSrc(current.cover_path) : null;
 
   return (
@@ -533,6 +563,7 @@ function App() {
           <>
             <div className="search-row">
               <input
+                ref={searchRef}
                 className="search"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -1078,12 +1109,48 @@ function App() {
         )}
 
         <button
+          className="icon stage-help"
+          onClick={() => setHelpOpen(true)}
+          title="Клавиши"
+        >
+          ?
+        </button>
+
+        <button
           className="icon stage-toggle"
           onClick={() => setImmersive((on) => !on)}
           title={immersive ? "Показать коллекцию" : "Скрыть коллекцию"}
         >
           {immersive ? "⤡" : "⤢"}
         </button>
+
+        {helpOpen && (
+          <div className="help" onClick={() => setHelpOpen(false)}>
+            <div className="help-card" onClick={(e) => e.stopPropagation()}>
+              <h3 className="help-title">Клавиши</h3>
+              <dl className="help-list">
+                {[
+                  ["Пробел", "Играть и пауза"],
+                  ["← →", `Перемотка на ${SEEK_STEP} секунд`],
+                  ["⇧ ← →", "Предыдущий и следующий трек"],
+                  ["↑ ↓", "Громкость"],
+                  ["M", "Заглушить"],
+                  ["S", "Шафл"],
+                  ["R", "Повтор"],
+                  ["⌘F или /", "Поиск"],
+                  ["Esc", "Закрыть и отменить"],
+                  ["?", "Эта подсказка"],
+                ].map(([keys, what]) => (
+                  <div key={keys} className="help-row">
+                    <dt>{keys}</dt>
+                    <dd>{what}</dd>
+                  </div>
+                ))}
+              </dl>
+              <p className="help-note">Буквы работают в любой раскладке.</p>
+            </div>
+          </div>
+        )}
 
         {current ? (
           <>
@@ -1156,6 +1223,30 @@ function App() {
                 onKeyUp={(e) => commitSeek(Number((e.target as HTMLInputElement).value))}
               />
               <span className="time">{formatTime(player.duration)}</span>
+
+              <button
+                className="icon volume-icon"
+                onClick={player.controls.toggleMute}
+                title={player.muted ? "Включить звук" : "Заглушить"}
+              >
+                {player.muted || player.volume === 0 ? "🔇" : player.volume < 0.5 ? "🔈" : "🔊"}
+              </button>
+
+              <input
+                className="volume"
+                style={
+                  {
+                    "--vol": `${(player.muted ? 0 : player.volume) * 100}%`,
+                  } as React.CSSProperties
+                }
+                type="range"
+                min={0}
+                max={1}
+                step={0.01}
+                value={player.muted ? 0 : player.volume}
+                aria-label="Громкость"
+                onChange={(e) => player.controls.setVolume(Number(e.target.value))}
+              />
             </div>
 
             {(player.queueLength > 0 || player.atEnd) && (
