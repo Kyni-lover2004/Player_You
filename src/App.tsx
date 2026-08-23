@@ -49,6 +49,10 @@ function App() {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [current, setCurrent] = useState<Track | null>(null);
 
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [draftArtist, setDraftArtist] = useState("");
+  const [draftTitle, setDraftTitle] = useState("");
+
   const audioRef = useRef<HTMLAudioElement>(null);
   const [duration, setDuration] = useState(0);
   const [position, setPosition] = useState(0);
@@ -93,6 +97,52 @@ function App() {
     setPosition(0);
     setDuration(track.duration_secs ?? 0);
     setSeekCheck(null);
+  }
+
+  /** Открывает правку трека, заполняя форму текущими значениями. */
+  function startEdit(track: Track) {
+    setEditingId(track.id);
+    setDraftArtist(track.artist ?? "");
+    setDraftTitle(track.title);
+  }
+
+  /** Закрывает форму, ничего не сохраняя. */
+  function cancelEdit() {
+    setEditingId(null);
+  }
+
+  /** Заменяет трек в списке и, если он играет, в плеере. */
+  function applyUpdate(updated: Track) {
+    setTracks((previous) => previous.map((t) => (t.id === updated.id ? updated : t)));
+    setCurrent((playingNow) => (playingNow?.id === updated.id ? updated : playingNow));
+  }
+
+  /** Сохраняет правку: трек помечается как правленный и выпадает из авточистки. */
+  async function saveEdit(id: number) {
+    if (!draftTitle.trim()) return;
+    try {
+      const updated = await invoke<Track>("save_track_title", {
+        id,
+        artist: draftArtist.trim() || null,
+        title: draftTitle,
+      });
+      applyUpdate(updated);
+      setEditingId(null);
+    } catch (error) {
+      setStatus({ kind: "error", message: String(error) });
+    }
+  }
+
+  /** Возвращает трек под авточистку и сразу переразбирает исходный заголовок. */
+  async function resetToAuto(id: number) {
+    try {
+      const updated = await invoke<Track>("reset_track_title", { id });
+      applyUpdate(updated);
+      setDraftArtist(updated.artist ?? "");
+      setDraftTitle(updated.title);
+    } catch (error) {
+      setStatus({ kind: "error", message: String(error) });
+    }
   }
 
   /** Переключает воспроизведение и паузу. */
@@ -148,22 +198,86 @@ function App() {
 
       <section className="library">
         {tracks.length === 0 && <p className="empty">Пока пусто. Вставь ссылку выше.</p>}
-        {tracks.map((track) => (
-          <button
-            key={track.id}
-            className={`track ${track.id === current?.id ? "active" : ""} ${track.missing ? "missing" : ""}`}
-            onClick={() => selectTrack(track)}
-            disabled={track.missing}
-          >
-            <Cover track={track} size="small" />
-            <span className="track-text">
-              <span className="track-title">{track.title}</span>
-              <span className="track-artist">
-                {track.missing ? "файла нет на диске" : track.artist ?? "исполнитель неизвестен"}
-              </span>
-            </span>
-          </button>
-        ))}
+
+        {tracks.map((track) =>
+          editingId === track.id ? (
+            <div key={track.id} className="track editing">
+              <Cover track={track} size="small" />
+              <div className="edit-form">
+                <input
+                  className="edit-input"
+                  value={draftTitle}
+                  onChange={(e) => setDraftTitle(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") saveEdit(track.id);
+                    if (e.key === "Escape") cancelEdit();
+                  }}
+                  placeholder="название"
+                  autoFocus
+                />
+                <input
+                  className="edit-input"
+                  value={draftArtist}
+                  onChange={(e) => setDraftArtist(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") saveEdit(track.id);
+                    if (e.key === "Escape") cancelEdit();
+                  }}
+                  placeholder="исполнитель"
+                />
+                <div className="edit-raw" title={track.raw_title}>
+                  было на YouTube: {track.raw_title}
+                </div>
+                <div className="edit-actions">
+                  <button className="mini primary" onClick={() => saveEdit(track.id)}>
+                    Сохранить
+                  </button>
+                  <button className="mini" onClick={cancelEdit}>
+                    Отмена
+                  </button>
+                  {track.edited && (
+                    <button
+                      className="mini ghost"
+                      onClick={() => resetToAuto(track.id)}
+                      title="Разобрать исходный заголовок заново"
+                    >
+                      Вернуть авточистку
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div
+              key={track.id}
+              className={`track ${track.id === current?.id ? "active" : ""} ${
+                track.missing ? "missing" : ""
+              }`}
+            >
+              <button
+                className="track-main"
+                onClick={() => !track.missing && selectTrack(track)}
+                disabled={track.missing}
+              >
+                <Cover track={track} size="small" />
+                <span className="track-text">
+                  <span className="track-title">
+                    {track.title}
+                    {track.edited && <span className="edited-dot" title="правлено руками" />}
+                  </span>
+                  <span className="track-artist">
+                    {track.missing
+                      ? "файла нет на диске"
+                      : track.artist ?? "исполнитель неизвестен"}
+                  </span>
+                </span>
+              </button>
+              <button className="track-edit" onClick={() => startEdit(track)} title="Править">
+                ✎
+              </button>
+            </div>
+          )
+        )}
       </section>
 
       {current && (

@@ -272,6 +272,48 @@ fn reparse_titles(conn: &rusqlite::Connection) -> Result<usize, String> {
     Ok(changed)
 }
 
+/// Приводит поле формы к значению для базы: пустая строка означает «не задано».
+fn normalize_field(value: Option<String>) -> Option<String> {
+    value
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+}
+
+/// Сохраняет правку названия руками и защищает её от будущей авточистки.
+#[tauri::command]
+fn save_track_title(
+    app: tauri::AppHandle,
+    id: i64,
+    artist: Option<String>,
+    title: String,
+) -> Result<db::Track, String> {
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err("название не может быть пустым".into());
+    }
+
+    let state = app.state::<Library>();
+    let conn = state.0.lock().map_err(|_| "библиотека занята")?;
+
+    db::set_edited_title(&conn, id, normalize_field(artist).as_deref(), &title)?;
+    db::find_by_id(&conn, id)?.ok_or_else(|| "трек не найден".into())
+}
+
+/// Возвращает трек под авточистку и сразу переразбирает исходный заголовок.
+#[tauri::command]
+fn reset_track_title(app: tauri::AppHandle, id: i64) -> Result<db::Track, String> {
+    let state = app.state::<Library>();
+    let conn = state.0.lock().map_err(|_| "библиотека занята")?;
+
+    let track = db::find_by_id(&conn, id)?.ok_or("трек не найден")?;
+    db::clear_edited(&conn, id)?;
+
+    let parsed = titles::parse(&track.raw_title);
+    db::update_parsed_title(&conn, id, parsed.artist.as_deref(), &parsed.title)?;
+
+    db::find_by_id(&conn, id)?.ok_or_else(|| "трек не найден".into())
+}
+
 /// Возвращает всю библиотеку из базы, свежие сверху.
 #[tauri::command]
 fn library(state: tauri::State<'_, Library>) -> Result<Vec<db::Track>, String> {
@@ -301,7 +343,7 @@ pub fn run() {
             app.manage(Library(Mutex::new(conn)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![download_track, library])
+        .invoke_handler(tauri::generate_handler![download_track, library, save_track_title, reset_track_title])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

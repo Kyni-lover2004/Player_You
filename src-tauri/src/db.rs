@@ -225,6 +225,20 @@ pub fn set_edited_title(
     Ok(())
 }
 
+/// Ищет трек по внутреннему идентификатору.
+pub fn find_by_id(conn: &Connection, id: i64) -> Result<Option<Track>, String> {
+    conn.query_row("SELECT * FROM tracks WHERE id = ?1", [id], row_to_track)
+        .optional()
+        .map_err(|e| format!("не удалось найти трек: {e}"))
+}
+
+/// Снимает пометку ручной правки: трек снова подчиняется авточистке.
+pub fn clear_edited(conn: &Connection, id: i64) -> Result<(), String> {
+    conn.execute("UPDATE tracks SET edited = 0 WHERE id = ?1", [id])
+        .map_err(|e| format!("не удалось снять пометку правки: {e}"))?;
+    Ok(())
+}
+
 /// Сверяет базу с диском и помечает пропавшие файлы.
 ///
 /// Спека требует, чтобы удалённый мимо приложения файл не исчезал молча:
@@ -328,6 +342,28 @@ mod tests {
         let conn = memory_db();
         let id = upsert_track(&conn, &sample("BFSpI9aJ4As", "/tmp/a.mp3")).unwrap();
         assert!(!update_parsed_title(&conn, id, Some("ROCKET"), "Инкассатор").unwrap());
+    }
+
+    #[test]
+    fn clearing_edit_returns_track_to_autocleanup() {
+        let conn = memory_db();
+        let id = upsert_track(&conn, &sample("BFSpI9aJ4As", "/tmp/a.mp3")).unwrap();
+
+        set_edited_title(&conn, id, Some("Моё"), "Моё название").unwrap();
+        assert!(!update_parsed_title(&conn, id, Some("ROCKET"), "Инкассатор").unwrap());
+
+        clear_edited(&conn, id).unwrap();
+        assert!(update_parsed_title(&conn, id, Some("ROCKET"), "Инкассатор").unwrap());
+
+        let track = find_by_id(&conn, id).unwrap().unwrap();
+        assert_eq!(track.title, "Инкассатор");
+        assert!(!track.edited);
+    }
+
+    #[test]
+    fn find_by_id_returns_none_for_missing_row() {
+        let conn = memory_db();
+        assert!(find_by_id(&conn, 999).unwrap().is_none());
     }
 
     #[test]

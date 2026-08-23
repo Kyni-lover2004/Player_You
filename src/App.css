@@ -20,6 +20,8 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+button { font-family: inherit; }
+
 .shell {
   min-height: 100vh;
   display: flex;
@@ -27,6 +29,8 @@ body {
   padding: 28px 32px 0;
   gap: 20px;
 }
+
+/* ── Шапка ───────────────────────────────────────────── */
 
 .head { display: flex; flex-direction: column; gap: 12px; }
 
@@ -83,11 +87,33 @@ body {
   word-break: break-all;
 }
 
+/* ── Обложки ─────────────────────────────────────────── */
+
+.cover {
+  flex: none;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  object-fit: cover;
+}
+
+.cover-small { width: 38px; height: 38px; }
+.cover-large { width: 48px; height: 48px; border-radius: 8px; }
+
+/* Штриховая рамка отличает «обложки нет» от почти чёрной обложки:
+   на тёмном фоне по яркости их не различить. */
+.cover-empty {
+  border-style: dashed;
+  background: var(--surface);
+}
+
+/* ── Библиотека ──────────────────────────────────────── */
+
 .library {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   overflow-y: auto;
   min-height: 0;
 }
@@ -95,17 +121,12 @@ body {
 .empty { color: var(--muted); font-size: 13px; }
 
 .track {
-  text-align: left;
-  padding: 11px 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   border-radius: 9px;
   border: 1px solid transparent;
-  background: transparent;
-  color: var(--text);
-  font-size: 13px;
-  cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  padding-right: 6px;
 }
 
 .track:hover { background: var(--surface); }
@@ -113,8 +134,139 @@ body {
 .track.active {
   background: var(--surface-2);
   border-color: var(--accent);
-  color: var(--accent);
 }
+
+.track.active .track-title { color: var(--accent); }
+.track.active .track-artist { color: var(--accent); opacity: 0.75; }
+
+.track.missing { opacity: 0.45; }
+.track.missing:hover { background: transparent; }
+
+.track-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.track-main:disabled { cursor: default; }
+
+.track-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.track-title,
+.track-artist {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.track-title { font-size: 13px; }
+.track-artist { font-size: 11px; color: var(--muted); }
+
+/* Точка помечает трек, правленный руками: авточистка его больше не трогает. */
+.edited-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
+
+.track-edit {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.track:hover .track-edit,
+.track.active .track-edit { opacity: 1; }
+
+.track-edit:hover { background: var(--surface-2); color: var(--text); }
+
+/* ── Правка трека ────────────────────────────────────── */
+
+.track.editing {
+  align-items: flex-start;
+  gap: 11px;
+  padding: 12px;
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+.edit-form {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.edit-input {
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+
+.edit-input:focus { border-color: var(--accent); }
+
+.edit-raw {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.edit-actions { display: flex; gap: 7px; flex-wrap: wrap; }
+
+.mini {
+  padding: 6px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mini:hover { background: var(--surface-2); }
+
+.mini.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #10061c;
+  font-weight: 600;
+}
+
+.mini.ghost { color: var(--muted); border-style: dashed; }
+
+/* ── Плеер ───────────────────────────────────────────── */
 
 .player {
   position: sticky;
@@ -128,13 +280,24 @@ body {
   gap: 10px;
 }
 
-.now {
-  font-size: 13px;
-  color: var(--muted);
+.now { display: flex; align-items: center; gap: 12px; }
+
+.now-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.now-text strong {
+  font-size: 14px;
+  font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+.now-artist { font-size: 12px; color: var(--muted); }
 
 .controls { display: flex; align-items: center; gap: 14px; }
 
@@ -177,94 +340,6 @@ body {
   cursor: pointer;
 }
 
-.drift {
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
+.drift { font-size: 12px; font-variant-numeric: tabular-nums; }
 .drift.good { color: var(--ok); }
 .drift.bad { color: var(--bad); }
-
-.track {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.track-title { font-size: 13px; }
-.track-artist { font-size: 11px; color: var(--muted); }
-.track.active .track-artist { color: var(--accent); }
-
-.track.missing { opacity: 0.45; cursor: default; }
-.track.missing:hover { background: transparent; }
-
-.cover {
-  flex: none;
-  border-radius: 6px;
-  background: var(--surface-2);
-  object-fit: cover;
-}
-
-.cover-small { width: 38px; height: 38px; }
-.cover-large { width: 48px; height: 48px; border-radius: 8px; }
-
-/* Заглушка до появления обложки: кольцо в духе иконки, а не серый прямоугольник. */
-.cover-empty {
-  border: 2px solid var(--border);
-  box-shadow: inset 0 0 0 3px var(--surface);
-}
-
-.track {
-  flex-direction: row;
-  align-items: center;
-  gap: 11px;
-}
-
-.track-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  text-align: left;
-}
-
-.track-title,
-.track-artist {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.now {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.now-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  color: var(--text);
-}
-
-.now-text strong {
-  font-size: 14px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.now-artist { font-size: 12px; color: var(--muted); }
-
-/* Тёмная обложка на тёмном фоне сливалась бы с пустотой — рамка держит форму. */
-.cover { border: 1px solid var(--border); }
-
-/* Заглушка отличается от тёмной обложки штриховой рамкой, а не яркостью. */
-.cover-empty {
-  border: 1px dashed var(--border);
-  box-shadow: none;
-  background: var(--surface);
-}
