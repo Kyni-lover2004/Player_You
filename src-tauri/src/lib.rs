@@ -12,6 +12,14 @@ use tauri::Manager;
 /// приходят из разных потоков, а Connection у rusqlite не Sync.
 struct Library(Mutex<rusqlite::Connection>);
 
+/// Что yt-dlp сообщил о скачанном треке.
+struct Downloaded {
+    video_id: String,
+    raw_title: String,
+    duration_secs: Option<f64>,
+    file_path: String,
+}
+
 /// Ищет исполняемый файл среди каталогов переменной PATH.
 fn which_from_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
@@ -34,9 +42,7 @@ fn resolve_binary(name: &str) -> Result<PathBuf, String> {
         }
     }
 
-    which_from_path(name).ok_or_else(|| {
-        format!("{name} не найден. Установи его: brew install {name}")
-    })
+    which_from_path(name).ok_or_else(|| format!("{name} не найден. Установи его: brew install {name}"))
 }
 
 /// Возвращает каталог для скачанных треков (~/Music/Omen), создавая его при необходимости.
@@ -48,12 +54,18 @@ fn output_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Синхронная часть скачивания: запускает yt-dlp и возвращает путь готового mp3.
+/// Разбирает значение длительности от yt-dlp: число либо "NA".
+fn parse_duration(raw: &str) -> Option<f64> {
+    raw.trim().parse::<f64>().ok().filter(|d| *d > 0.0)
+}
+
+/// Скачивает аудио одного видео и возвращает файл вместе с метаданными.
 ///
-/// Битрейт задан через --audio-quality 320K, что превращается в ffmpeg-ключ `-b:a 320k`,
-/// то есть в постоянный битрейт. CBR здесь не вкусовщина: в mp3 нет индекса, и точная
-/// перемотка возможна только когда позицию можно посчитать байтовой арифметикой.
-fn download_track_blocking(url: &str) -> Result<String, String> {
+/// Битрейт задан через --audio-quality 320K, что превращается в ffmpeg-ключ
+/// `-b:a 320k`, то есть в постоянный битрейт. CBR здесь не вкусовщина: в mp3
+/// нет индекса, и точная перемотка возможна только когда позицию можно
+/// посчитать байтовой арифметикой.
+fn download_blocking(url: &str) -> Result<Downloaded, String> {
     let url = url.trim();
     if url.is_empty() {
         return Err("пустая ссылка".into());
@@ -64,12 +76,10 @@ fn download_track_blocking(url: &str) -> Result<String, String> {
 
     let ytdlp = resolve_binary("yt-dlp")?;
     let ffmpeg = resolve_binary("ffmpeg")?;
-    let ffmpeg_dir = ffmpeg
-        .parent()
-        .ok_or("не удалось определить каталог ffmpeg")?;
+    let ffmpeg_dir = ffmpeg.parent().ok_or("не удалось определить каталог ffmpeg")?;
     let dir = output_dir()?;
 
-    // Идентификатор видео в имени файла — будущий ключ дедупликации из спеки.
+    // Идентификатор видео в имени файла — ключ дедупликации из спеки.
     let template = dir.join("%(title)s [%(id)s].%(ext)s");
 
     let output = Command::new(&ytdlp)
@@ -81,7 +91,12 @@ fn download_track_blocking(url: &str) -> Result<String, String> {
         .arg(ffmpeg_dir)
         .arg("--output")
         .arg(&template)
-        // Печатает итоговый путь уже после всех перекодирований и переименований.
+        // Четыре отдельных --print дают четыре строки в заданном порядке.
+        // Один шаблон с разделителем был бы короче, но сломался бы на
+        // заголовке, содержащем этот разделитель.
+        .args(["--print", "after_move:id"])
+        .args(["--print", "after_move:title"])
+        .args(["--print", "after_move:duration"])
         .args(["--print", "after_move:filepath"])
         .arg("--no-simulate")
         .arg("--quiet")
@@ -100,43 +115,78 @@ fn download_track_blocking(url: &str) -> Result<String, String> {
         });
     }
 
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path.is_empty() {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+
+    // Ровно четыре строки. Иначе заголовок содержал перевод строки и
+    // разбор поехал — лучше честно сказать, чем записать мусор в базу.
+    let [id, title, duration, path] = lines.as_slice() else {
+        return Err(format!(
+            "yt-dlp вернул {} строк вместо четырёх — разбор метаданных ненадёжен",
+            lines.len()
+        ));
+    };
+
+    if path.trim().is_empty() {
         return Err("yt-dlp отработал, но не сообщил путь до файла".into());
     }
-    Ok(path)
+
+    Ok(Downloaded {
+        video_id: id.trim().to_string(),
+        raw_title: title.trim().to_string(),
+        duration_secs: parse_duration(duration),
+        file_path: path.trim().to_string(),
+    })
 }
 
-/// Скачивает аудио одного видео с YouTube в mp3 320 CBR и возвращает путь до файла.
+/// Скачивает трек, чистит заголовок и заносит результат в библиотеку.
 ///
-/// Работа уходит в блокирующий пул: скачивание идёт минутами, и держать
-/// на нём поток рантайма — значит заморозить окно.
+/// Скачивание уходит в блокирующий пул: оно идёт минутами, и держать на нём
+/// поток рантайма — значит заморозить окно.
 #[tauri::command]
-async fn download_track(url: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || download_track_blocking(&url))
+async fn download_track(app: tauri::AppHandle, url: String) -> Result<db::Track, String> {
+    let downloaded = tauri::async_runtime::spawn_blocking(move || download_blocking(&url))
         .await
-        .map_err(|e| format!("задача скачивания прервалась: {e}"))?
+        .map_err(|e| format!("задача скачивания прервалась: {e}"))??;
+
+    let parsed = titles::parse(&downloaded.raw_title);
+
+    let new_track = db::NewTrack {
+        video_id: downloaded.video_id.clone(),
+        raw_title: downloaded.raw_title,
+        artist: parsed.artist,
+        title: parsed.title,
+        file_path: downloaded.file_path,
+        cover_path: None,
+        duration_secs: downloaded.duration_secs,
+    };
+
+    let state = app.state::<Library>();
+    let conn = state.0.lock().map_err(|_| "библиотека занята")?;
+    db::upsert_track(&conn, &new_track)?;
+
+    db::find_by_video_id(&conn, &downloaded.video_id)?
+        .ok_or_else(|| "трек записан, но не читается обратно".into())
 }
 
-/// Возвращает пути ко всем mp3 в каталоге загрузок, отсортированные по имени.
+/// Перечищает названия по текущим правилам, пропуская правленные руками.
 ///
-/// Срез 0c: нужен, чтобы играть уже скачанное, не качая заново.
-/// Полноценная библиотека приедет на срезе 1 вместе с SQLite.
-#[tauri::command]
-fn list_tracks() -> Result<Vec<String>, String> {
-    let dir = output_dir()?;
-    let entries = std::fs::read_dir(&dir)
-        .map_err(|e| format!("не удалось прочитать {}: {e}", dir.display()))?;
+/// Правила чистки со временем улучшаются, а `raw_title` хранится именно ради
+/// этого: исходный заголовок позволяет переразобрать трек, не скачивая заново.
+fn reparse_titles(conn: &rusqlite::Connection) -> Result<usize, String> {
+    let mut changed = 0;
 
-    let mut paths: Vec<String> = entries
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "mp3"))
-        .filter_map(|path| path.to_str().map(str::to_owned))
-        .collect();
+    for track in db::all_tracks(conn)? {
+        if track.edited {
+            continue;
+        }
+        let parsed = titles::parse(&track.raw_title);
+        if db::update_parsed_title(conn, track.id, parsed.artist.as_deref(), &parsed.title)? {
+            changed += 1;
+        }
+    }
 
-    paths.sort();
-    Ok(paths)
+    Ok(changed)
 }
 
 /// Возвращает всю библиотеку из базы, свежие сверху.
@@ -160,10 +210,15 @@ pub fn run() {
                 eprintln!("сверка с диском: обновлено записей — {changed}");
             }
 
+            let reparsed = reparse_titles(&conn)?;
+            if reparsed > 0 {
+                eprintln!("перечистка названий: обновлено записей — {reparsed}");
+            }
+
             app.manage(Library(Mutex::new(conn)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![download_track, list_tracks, library])
+        .invoke_handler(tauri::generate_handler![download_track, library])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

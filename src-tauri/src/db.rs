@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS tracks (
     cover_path     TEXT,
     duration_secs  REAL,
     added_at       INTEGER NOT NULL,
-    missing        INTEGER NOT NULL DEFAULT 0
+    missing        INTEGER NOT NULL DEFAULT 0,
+    edited         INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_tracks_added_at ON tracks(added_at DESC);
@@ -44,6 +45,8 @@ pub struct Track {
     pub added_at: i64,
     /// Файла нет на диске: удалён мимо приложения. Строку при этом не теряем.
     pub missing: bool,
+    /// Название правили руками — авточистка такую строку больше не трогает.
+    pub edited: bool,
 }
 
 /// Данные для добавления трека: всё то же, но без идентификатора и служебных полей.
@@ -74,7 +77,32 @@ pub fn open(path: &Path) -> Result<Connection, String> {
     conn.execute_batch(SCHEMA)
         .map_err(|e| format!("не удалось создать схему: {e}"))?;
 
+    ensure_column(&conn, "tracks", "edited", "INTEGER NOT NULL DEFAULT 0")?;
+
     Ok(conn)
+}
+
+/// Добавляет колонку, если её ещё нет.
+///
+/// CREATE TABLE IF NOT EXISTS не достраивает существующую таблицу, поэтому
+/// базы, созданные предыдущей версией, нужно доводить руками.
+fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|e| format!("не удалось прочитать схему {table}: {e}"))?;
+
+    let existing: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| format!("не удалось перечислить колонки: {e}"))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| format!("не удалось разобрать колонки: {e}"))?;
+
+    if !existing.iter().any(|name| name == column) {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"))
+            .map_err(|e| format!("не удалось добавить колонку {column}: {e}"))?;
+    }
+
+    Ok(())
 }
 
 /// Текущее время в секундах Unix.
@@ -98,6 +126,7 @@ fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
         duration_secs: row.get("duration_secs")?,
         added_at: row.get("added_at")?,
         missing: row.get::<_, i64>("missing")? != 0,
+        edited: row.get::<_, i64>("edited")? != 0,
     })
 }
 
@@ -159,6 +188,41 @@ pub fn all_tracks(conn: &Connection) -> Result<Vec<Track>, String> {
 
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|e| format!("не удалось разобрать строку библиотеки: {e}"))
+}
+
+/// Записывает результат авточистки, не трогая строки, правленные руками.
+///
+/// Возвращает true, если строка действительно изменилась.
+pub fn update_parsed_title(
+    conn: &Connection,
+    id: i64,
+    artist: Option<&str>,
+    title: &str,
+) -> Result<bool, String> {
+    let affected = conn
+        .execute(
+            "UPDATE tracks SET artist = ?1, title = ?2
+             WHERE id = ?3 AND edited = 0 AND (artist IS NOT ?1 OR title IS NOT ?2)",
+            rusqlite::params![artist, title, id],
+        )
+        .map_err(|e| format!("не удалось обновить название: {e}"))?;
+
+    Ok(affected > 0)
+}
+
+/// Помечает название как правленное руками и сохраняет правку.
+pub fn set_edited_title(
+    conn: &Connection,
+    id: i64,
+    artist: Option<&str>,
+    title: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE tracks SET artist = ?1, title = ?2, edited = 1 WHERE id = ?3",
+        rusqlite::params![artist, title, id],
+    )
+    .map_err(|e| format!("не удалось сохранить правку: {e}"))?;
+    Ok(())
 }
 
 /// Сверяет базу с диском и помечает пропавшие файлы.
@@ -236,6 +300,34 @@ mod tests {
         upsert_track(&conn, &sample("aaaaaaaaaaa", "/tmp/a.mp3")).unwrap();
         upsert_track(&conn, &sample("bbbbbbbbbbb", "/tmp/b.mp3")).unwrap();
         assert_eq!(all_tracks(&conn).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn reparse_updates_untouched_title() {
+        let conn = memory_db();
+        let id = upsert_track(&conn, &sample("BFSpI9aJ4As", "/tmp/a.mp3")).unwrap();
+
+        assert!(update_parsed_title(&conn, id, Some("ROCKET"), "Другое").unwrap());
+        assert_eq!(find_by_video_id(&conn, "BFSpI9aJ4As").unwrap().unwrap().title, "Другое");
+    }
+
+    #[test]
+    fn reparse_does_not_touch_manual_edit() {
+        let conn = memory_db();
+        let id = upsert_track(&conn, &sample("BFSpI9aJ4As", "/tmp/a.mp3")).unwrap();
+        set_edited_title(&conn, id, Some("Моё"), "Моё название").unwrap();
+
+        assert!(!update_parsed_title(&conn, id, Some("ROCKET"), "Инкассатор").unwrap());
+        let track = find_by_video_id(&conn, "BFSpI9aJ4As").unwrap().unwrap();
+        assert_eq!(track.title, "Моё название", "авточистка затёрла ручную правку");
+        assert!(track.edited);
+    }
+
+    #[test]
+    fn reparse_reports_no_change_when_nothing_differs() {
+        let conn = memory_db();
+        let id = upsert_track(&conn, &sample("BFSpI9aJ4As", "/tmp/a.mp3")).unwrap();
+        assert!(!update_parsed_title(&conn, id, Some("ROCKET"), "Инкассатор").unwrap());
     }
 
     #[test]

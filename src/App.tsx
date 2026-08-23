@@ -2,10 +2,24 @@ import { useEffect, useRef, useState } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import "./App.css";
 
+/** Трек в библиотеке. Поля повторяют структуру db::Track на Rust-стороне. */
+type Track = {
+  id: number;
+  video_id: string;
+  raw_title: string;
+  artist: string | null;
+  title: string;
+  file_path: string;
+  cover_path: string | null;
+  duration_secs: number | null;
+  added_at: number;
+  missing: boolean;
+  edited: boolean;
+};
+
 type Status =
   | { kind: "idle" }
   | { kind: "working" }
-  | { kind: "done"; path: string }
   | { kind: "error"; message: string };
 
 /** Точность последней перемотки: куда просили и куда встали на самом деле. */
@@ -15,21 +29,14 @@ type SeekCheck = { requested: number; actual: number };
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds)) return "0:00";
   const total = Math.floor(seconds);
-  const mins = Math.floor(total / 60);
-  const secs = total % 60;
-  return `${mins}:${secs.toString().padStart(2, "0")}`;
-}
-
-/** Достаёт имя файла из полного пути. */
-function basename(path: string): string {
-  return path.split("/").pop() ?? path;
+  return `${Math.floor(total / 60)}:${(total % 60).toString().padStart(2, "0")}`;
 }
 
 function App() {
   const [url, setUrl] = useState("");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
-  const [tracks, setTracks] = useState<string[]>([]);
-  const [current, setCurrent] = useState<string | null>(null);
+  const [tracks, setTracks] = useState<Track[]>([]);
+  const [current, setCurrent] = useState<Track | null>(null);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const [duration, setDuration] = useState(0);
@@ -41,38 +48,39 @@ function App() {
 
   const busy = status.kind === "working";
 
-  /** Перечитывает каталог загрузок и обновляет список треков. */
-  async function refreshTracks() {
+  /** Перечитывает библиотеку из базы. */
+  async function refresh() {
     try {
-      setTracks(await invoke<string[]>("list_tracks"));
-    } catch (error) {
-      console.error("не удалось прочитать каталог загрузок", error);
-    }
-  }
-
-  useEffect(() => {
-    refreshTracks();
-  }, []);
-
-  /** Отправляет ссылку в Rust, затем обновляет список и выбирает новый трек. */
-  async function handleDownload() {
-    if (!url.trim() || busy) return;
-    setStatus({ kind: "working" });
-    try {
-      const path = await invoke<string>("download_track", { url });
-      setStatus({ kind: "done", path });
-      await refreshTracks();
-      setCurrent(path);
+      setTracks(await invoke<Track[]>("library"));
     } catch (error) {
       setStatus({ kind: "error", message: String(error) });
     }
   }
 
-  /** Ставит трек текущим и сбрасывает позицию. */
-  function selectTrack(path: string) {
-    setCurrent(path);
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  /** Скачивает трек по ссылке, затем обновляет библиотеку и выбирает новинку. */
+  async function handleDownload() {
+    if (!url.trim() || busy) return;
+    setStatus({ kind: "working" });
+    try {
+      const track = await invoke<Track>("download_track", { url });
+      setStatus({ kind: "idle" });
+      setUrl("");
+      await refresh();
+      selectTrack(track);
+    } catch (error) {
+      setStatus({ kind: "error", message: String(error) });
+    }
+  }
+
+  /** Ставит трек текущим и сбрасывает состояние проигрывания. */
+  function selectTrack(track: Track) {
+    setCurrent(track);
     setPosition(0);
-    setDuration(0);
+    setDuration(track.duration_secs ?? 0);
     setSeekCheck(null);
   }
 
@@ -118,9 +126,7 @@ function App() {
             {busy ? "Качаю…" : "Скачать"}
           </button>
         </div>
-        {status.kind === "working" && (
-          <p className="status working">yt-dlp работает. Окно при этом не должно замирать.</p>
-        )}
+        {busy && <p className="status working">yt-dlp работает. Окно при этом не замирает.</p>}
         {status.kind === "error" && (
           <p className="status error">
             Не вышло<br />
@@ -131,20 +137,27 @@ function App() {
 
       <section className="library">
         {tracks.length === 0 && <p className="empty">Пока пусто. Вставь ссылку выше.</p>}
-        {tracks.map((path) => (
+        {tracks.map((track) => (
           <button
-            key={path}
-            className={`track ${path === current ? "active" : ""}`}
-            onClick={() => selectTrack(path)}
+            key={track.id}
+            className={`track ${track.id === current?.id ? "active" : ""} ${track.missing ? "missing" : ""}`}
+            onClick={() => selectTrack(track)}
+            disabled={track.missing}
           >
-            {basename(path)}
+            <span className="track-title">{track.title}</span>
+            <span className="track-artist">
+              {track.missing ? "файла нет на диске" : track.artist ?? "исполнитель неизвестен"}
+            </span>
           </button>
         ))}
       </section>
 
       {current && (
         <footer className="player">
-          <div className="now">{basename(current)}</div>
+          <div className="now">
+            <strong>{current.title}</strong>
+            {current.artist && <> · {current.artist}</>}
+          </div>
 
           <div className="controls">
             <button className="play" onClick={togglePlay}>
@@ -178,7 +191,7 @@ function App() {
 
           <audio
             ref={audioRef}
-            src={convertFileSrc(current)}
+            src={convertFileSrc(current.file_path)}
             preload="metadata"
             onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
             onTimeUpdate={(e) => !scrubbing && setPosition(e.currentTarget.currentTime)}
@@ -191,13 +204,6 @@ function App() {
                 actual: e.currentTarget.currentTime,
               });
               pendingSeek.current = null;
-            }}
-            onError={(e) => {
-              const err = e.currentTarget.error;
-              setStatus({
-                kind: "error",
-                message: `аудио не загрузилось (код ${err?.code ?? "?"}). Проверь область asset-протокола.`,
-              });
             }}
           />
         </footer>

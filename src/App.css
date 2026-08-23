@@ -184,3 +184,16 @@ body {
 
 .drift.good { color: var(--ok); }
 .drift.bad { color: var(--bad); }
+
+.track {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.track-title { font-size: 13px; }
+.track-artist { font-size: 11px; color: var(--muted); }
+.track.active .track-artist { color: var(--accent); }
+
+.track.missing { opacity: 0.45; cursor: default; }
+.track.missing:hover { background: transparent; }

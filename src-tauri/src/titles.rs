@@ -21,7 +21,7 @@ const DASHES: [char; 6] = ['-', '–', '—', '−', '‒', '―'];
 ///
 /// Сравнение точное, а не по вхождению: иначе `(Live at Wembley)` или
 /// `(Acoustic)` погибли бы вместе с мусором, а их терять нельзя.
-const NOISE: [&str; 27] = [
+const NOISE: &[&str] = &[
     "official video",
     "official music video",
     "official audio",
@@ -49,11 +49,42 @@ const NOISE: [&str; 27] = [
     "премьера",
     "премьера клипа",
     "текст песни",
+    "аудио",
+    "видео",
+    "официальное видео",
+    "официальное аудио",
+    "слова",
+    "live audio",
 ];
+
+/// Похоже ли слово на отдельно стоящий год: 1900–2099.
+fn is_year(word: &str) -> bool {
+    let bare = word.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    bare.len() == 4
+        && bare.chars().all(|c| c.is_ascii_digit())
+        && bare
+            .parse::<u32>()
+            .map(|year| (1900..=2099).contains(&year))
+            .unwrap_or(false)
+}
+
+/// Приводит содержимое скобок к виду, пригодному для сравнения с пометками.
+///
+/// Год выбрасывается: каналы пишут `[аудио 2024]`, `(Official Video 2019)`,
+/// и без этого шага точное сравнение промахивается мимо каждого такого случая.
+fn normalize_marker(inner: &str) -> String {
+    inner
+        .to_lowercase()
+        .split_whitespace()
+        .filter(|word| !is_year(word))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 /// Распознаёт содержимое скобок как мусор.
 fn is_noise(inner: &str) -> bool {
-    let lower = inner.trim().to_lowercase();
+    let lower = normalize_marker(inner);
+    // Пустота после нормализации: скобки содержали только год либо ничего.
     if lower.is_empty() {
         return true;
     }
@@ -280,6 +311,33 @@ mod tests {
         let (artist, title) = parsed("(Official Video)");
         assert_eq!(artist, None);
         assert_eq!(title, "(Official Video)");
+    }
+
+    #[test]
+    fn real_track_scriptonite_with_russian_marker() {
+        // Настоящий заголовок со второго скачанного трека.
+        let (artist, title) = parsed("Скриптонит - не расслабляйся [аудио 2024]");
+        assert_eq!(artist.as_deref(), Some("Скриптонит"));
+        assert_eq!(title, "не расслабляйся");
+    }
+
+    #[test]
+    fn year_alone_in_brackets_is_noise() {
+        let (_, title) = parsed("Artist - Song (2024)");
+        assert_eq!(title, "Song");
+    }
+
+    #[test]
+    fn year_does_not_make_meaningful_brackets_noise() {
+        // «live» пометкой не считается, поэтому скобки должны уцелеть.
+        let (_, title) = parsed("Artist - Song (Live 2024)");
+        assert_eq!(title, "Song (Live 2024)");
+    }
+
+    #[test]
+    fn english_marker_with_year_is_noise() {
+        let (_, title) = parsed("Artist - Song (Official Video 2019)");
+        assert_eq!(title, "Song");
     }
 
     #[test]
