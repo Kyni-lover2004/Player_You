@@ -1,7 +1,7 @@
 mod db;
 mod titles;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 use tauri::Manager;
@@ -18,6 +18,7 @@ struct Downloaded {
     raw_title: String,
     duration_secs: Option<f64>,
     file_path: String,
+    cover_path: Option<String>,
 }
 
 /// Ищет исполняемый файл среди каталогов переменной PATH.
@@ -54,6 +55,64 @@ fn output_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// Каталог обложек внутри каталога загрузок.
+fn covers_dir() -> Result<PathBuf, String> {
+    let dir = output_dir()?.join("covers");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("не удалось создать {}: {e}", dir.display()))?;
+    Ok(dir)
+}
+
+/// Сторона квадратной обложки.
+///
+/// Превью с YouTube — 1280×720, поэтому 720 это наибольший квадрат,
+/// который получается без растягивания исходника.
+const COVER_SIZE: u32 = 720;
+
+/// Делает из превью квадратную обложку и кладёт в каталог обложек.
+///
+/// Превью всегда 16:9, а обложка квадратная. Центральный кроп выбрасывал бы
+/// 44% ширины вместе с текстом, поэтому картинка вписывается целиком, а поля
+/// заполняются ею же в блюре с затемнением — тем же приёмом, что и фон
+/// полноэкранного вида. Делает ffmpeg, а не отдельный крейт: он и так
+/// обязателен для перекодирования.
+fn make_square_cover(ffmpeg: &Path, source: &Path, video_id: &str) -> Result<String, String> {
+    let target = covers_dir()?.join(format!("{video_id}.jpg"));
+    let size = COVER_SIZE;
+
+    // Фон: превью растянуто до заполнения квадрата, обрезано и размыто.
+    // Передний план: то же превью, вписанное целиком. Сверху overlay.
+    // Затемнения тут намеренно нет: это свойство показа, а не файла —
+    // полноэкранный вид кладёт поверх фона тинт темы, там ему и место.
+    let filter = format!(
+        "[0:v]scale={size}:{size}:force_original_aspect_ratio=increase,\
+crop={size}:{size},boxblur=24:3[bg];\
+[0:v]scale={size}:{size}:force_original_aspect_ratio=decrease[fg];\
+[bg][fg]overlay=(W-w)/2:(H-h)/2"
+    );
+
+    let output = Command::new(ffmpeg)
+        .arg("-y")
+        .args(["-loglevel", "error"])
+        .arg("-i")
+        .arg(source)
+        .args(["-filter_complex", &filter])
+        .args(["-q:v", "2"])
+        .arg(&target)
+        .output()
+        .map_err(|e| format!("не удалось запустить ffmpeg: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("ffmpeg не смог собрать обложку: {}", stderr.trim()));
+    }
+
+    target
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "путь обложки содержит недопустимые символы".to_string())
+}
+
 /// Разбирает значение длительности от yt-dlp: число либо "NA".
 fn parse_duration(raw: &str) -> Option<f64> {
     raw.trim().parse::<f64>().ok().filter(|d| *d > 0.0)
@@ -87,6 +146,8 @@ fn download_blocking(url: &str) -> Result<Downloaded, String> {
         .args(["--audio-format", "mp3"])
         .args(["--audio-quality", "320K"])
         .arg("--no-playlist")
+        .arg("--write-thumbnail")
+        .args(["--convert-thumbnail", "jpg"])
         .arg("--ffmpeg-location")
         .arg(ffmpeg_dir)
         .arg("--output")
@@ -131,11 +192,33 @@ fn download_blocking(url: &str) -> Result<Downloaded, String> {
         return Err("yt-dlp отработал, но не сообщил путь до файла".into());
     }
 
+    let audio_path = PathBuf::from(path.trim());
+
+    // Превью yt-dlp кладёт рядом с аудио под тем же именем.
+    let thumbnail = audio_path.with_extension("jpg");
+    let cover_path = if thumbnail.is_file() {
+        match make_square_cover(&ffmpeg, &thumbnail, id.trim()) {
+            Ok(cover) => {
+                // Исходное 16:9 больше не нужно и только мусорит в папке с музыкой.
+                let _ = std::fs::remove_file(&thumbnail);
+                Some(cover)
+            }
+            // Неудача с обложкой не отменяет скачанный трек: музыка важнее картинки.
+            Err(reason) => {
+                eprintln!("обложка не обработана: {reason}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     Ok(Downloaded {
         video_id: id.trim().to_string(),
         raw_title: title.trim().to_string(),
         duration_secs: parse_duration(duration),
         file_path: path.trim().to_string(),
+        cover_path,
     })
 }
 
@@ -157,7 +240,7 @@ async fn download_track(app: tauri::AppHandle, url: String) -> Result<db::Track,
         artist: parsed.artist,
         title: parsed.title,
         file_path: downloaded.file_path,
-        cover_path: None,
+        cover_path: downloaded.cover_path,
         duration_secs: downloaded.duration_secs,
     };
 

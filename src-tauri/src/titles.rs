@@ -55,6 +55,13 @@ const NOISE: &[&str] = &[
     "официальное аудио",
     "слова",
     "live audio",
+    "subs",
+    "eng subs",
+    "eng sub",
+    "rus sub",
+    "subtitles",
+    "субтитры",
+    "перевод",
 ];
 
 /// Похоже ли слово на отдельно стоящий год: 1900–2099.
@@ -93,7 +100,22 @@ fn is_noise(inner: &str) -> bool {
     {
         return true;
     }
-    NOISE.contains(&lower.as_str())
+
+    // Целиком — до разбиения: иначе "m/v" развалилось бы на "m" и "v"
+    // и перестало бы распознаваться.
+    if NOISE.contains(&lower.as_str()) {
+        return true;
+    }
+
+    // Составные пометки: "Lyrics + Eng Subs", "Audio / Video".
+    // Группа считается мусором, только если мусор — каждая её часть.
+    let parts: Vec<&str> = lower
+        .split(['+', '/', '|', ','])
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect();
+
+    parts.len() > 1 && parts.iter().all(|part| NOISE.contains(part))
 }
 
 /// Возвращает парную закрывающую скобку.
@@ -337,6 +359,26 @@ mod tests {
     #[test]
     fn english_marker_with_year_is_noise() {
         let (_, title) = parsed("Artist - Song (Official Video 2019)");
+        assert_eq!(title, "Song");
+    }
+
+    #[test]
+    fn compound_marker_is_noise() {
+        // Настоящий заголовок с третьего скачанного трека.
+        let (_, title) = parsed("TATU (Lyrics + Eng Subs)");
+        assert_eq!(title, "TATU");
+    }
+
+    #[test]
+    fn compound_group_survives_if_any_part_is_meaningful() {
+        let (_, title) = parsed("Song (Lyrics + Live at Wembley)");
+        assert_eq!(title, "Song (Lyrics + Live at Wembley)");
+    }
+
+    #[test]
+    fn slash_marker_still_recognised() {
+        // Проверка порядка: "m/v" должно ловиться целиком, до разбиения.
+        let (_, title) = parsed("Artist - Song (M/V)");
         assert_eq!(title, "Song");
     }
 

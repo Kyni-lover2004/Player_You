@@ -32,6 +32,17 @@ function formatTime(seconds: number): string {
   return `${Math.floor(total / 60)}:${(total % 60).toString().padStart(2, "0")}`;
 }
 
+/** Квадратная обложка трека либо заглушка, если её ещё нет. */
+function Cover({ track, size }: { track: Track; size: "small" | "large" }) {
+  const className = `cover cover-${size}`;
+  if (!track.cover_path) {
+    return <div className={`${className} cover-empty`} aria-hidden />;
+  }
+  return (
+    <img className={className} src={convertFileSrc(track.cover_path)} alt="" loading="lazy" />
+  );
+}
+
 function App() {
   const [url, setUrl] = useState("");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
@@ -144,9 +155,12 @@ function App() {
             onClick={() => selectTrack(track)}
             disabled={track.missing}
           >
-            <span className="track-title">{track.title}</span>
-            <span className="track-artist">
-              {track.missing ? "файла нет на диске" : track.artist ?? "исполнитель неизвестен"}
+            <Cover track={track} size="small" />
+            <span className="track-text">
+              <span className="track-title">{track.title}</span>
+              <span className="track-artist">
+                {track.missing ? "файла нет на диске" : track.artist ?? "исполнитель неизвестен"}
+              </span>
             </span>
           </button>
         ))}
@@ -155,8 +169,11 @@ function App() {
       {current && (
         <footer className="player">
           <div className="now">
-            <strong>{current.title}</strong>
-            {current.artist && <> · {current.artist}</>}
+            <Cover track={current} size="large" />
+            <span className="now-text">
+              <strong>{current.title}</strong>
+              {current.artist && <span className="now-artist">{current.artist}</span>}
+            </span>
           </div>
 
           <div className="controls">
