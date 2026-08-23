@@ -914,3 +914,59 @@ code.job-error {
 }
 
 .ask-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* ── Редактор темы ───────────────────────────────────── */
+
+.theme-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 11px;
+  padding-right: 6px;
+}
+
+.theme-row:hover { background: var(--surface); }
+.theme-row:hover .track-act { opacity: 1; }
+.theme-row.active .theme { color: var(--accent); }
+
+.theme-row .theme { flex: 1; min-width: 0; }
+.theme-row .theme:hover { background: transparent; }
+
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 4px;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* Нативный выбор цвета: свой был бы хуже системного и без пипетки. */
+.field input[type="color"] {
+  width: 52px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.editor-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.new-theme {
+  align-self: flex-start;
+  margin-top: 6px;
+}

@@ -2,7 +2,16 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { usePlayer } from "./player/usePlayer";
-import { THEMES, type ThemeSeed, applyTheme, themeById } from "./theme/themes";
+import {
+  THEMES,
+  type ThemeSeed,
+  applyTheme,
+  isCustom,
+  loadCustomThemes,
+  newThemeId,
+  saveCustomThemes,
+  themeById,
+} from "./theme/themes";
 import "./App.css";
 
 /** Трек в библиотеке. Поля повторяют структуру db::Track на Rust-стороне. */
@@ -182,9 +191,11 @@ function App() {
   const [pickingTracks, setPickingTracks] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [customThemes, setCustomThemes] = useState<ThemeSeed[]>(() => loadCustomThemes());
   const [theme, setTheme] = useState<ThemeSeed>(() =>
     themeById(localStorage.getItem("omen.theme"))
   );
+  const [draft, setDraft] = useState<ThemeSeed | null>(null);
 
   const byId = useMemo(() => new Map(tracks.map((t) => [t.id, t])), [tracks]);
 
@@ -379,6 +390,52 @@ function App() {
     applyTheme(seed);
     localStorage.setItem("omen.theme", seed.id);
     setTheme(seed);
+  }
+
+  /** Начинает новую тему от текущей: так виднее, что именно меняешь. */
+  function startNewTheme() {
+    setDraft({ ...theme, id: newThemeId(), name: "Моя тема" });
+  }
+
+  /** Меняет черновик и сразу показывает результат на всём окне. */
+  function editDraft(change: Partial<ThemeSeed>) {
+    setDraft((current) => {
+      if (!current) return current;
+      const next = { ...current, ...change };
+      applyTheme(next);
+      return next;
+    });
+  }
+
+  /** Сохраняет черновик и делает его текущей темой. */
+  function saveDraft() {
+    if (!draft) return;
+    const name = draft.name.trim() || "Моя тема";
+    const seed = { ...draft, name };
+
+    const next = customThemes.some((t) => t.id === seed.id)
+      ? customThemes.map((t) => (t.id === seed.id ? seed : t))
+      : [...customThemes, seed];
+
+    setCustomThemes(next);
+    saveCustomThemes(next);
+    setDraft(null);
+    chooseTheme(seed);
+  }
+
+  /** Закрывает редактор, возвращая окну прежнюю тему. */
+  function cancelDraft() {
+    applyTheme(theme);
+    setDraft(null);
+  }
+
+  /** Удаляет свою тему. Если она была включена, окно вернётся к «Аметисту». */
+  function deleteTheme(id: string) {
+    const next = customThemes.filter((t) => t.id !== id);
+    setCustomThemes(next);
+    saveCustomThemes(next);
+    setDraft(null);
+    if (theme.id === id) chooseTheme(THEMES[0]);
   }
 
   /** Открывает правку трека, заполняя форму текущими значениями. */
@@ -818,19 +875,94 @@ function App() {
 
         {view === "themes" && (
           <div className="themes">
-            {THEMES.map((seed) => (
-              <button
-                key={seed.id}
-                className={`theme ${seed.id === theme.id ? "active" : ""}`}
-                onClick={() => chooseTheme(seed)}
-              >
-                <span
-                  className="theme-swatch"
-                  style={{ background: seed.bg, color: seed.accent }}
+            {draft ? (
+              <div className="editor">
+                <input
+                  className="edit-input"
+                  value={draft.name}
+                  onChange={(e) => editDraft({ name: e.target.value })}
+                  placeholder="название темы"
+                  autoFocus
                 />
-                {seed.name}
-              </button>
-            ))}
+
+                <label className="field">
+                  <span>Фон</span>
+                  <input
+                    type="color"
+                    value={draft.bg}
+                    onChange={(e) => editDraft({ bg: e.target.value })}
+                  />
+                </label>
+
+                <label className="field">
+                  <span>Акцент</span>
+                  <input
+                    type="color"
+                    value={draft.accent}
+                    onChange={(e) => editDraft({ accent: e.target.value })}
+                  />
+                </label>
+
+                <label className="field">
+                  <span>Конец градиента</span>
+                  <input
+                    type="color"
+                    value={draft.accentEnd}
+                    onChange={(e) => editDraft({ accentEnd: e.target.value })}
+                  />
+                </label>
+
+                <p className="editor-note">
+                  Цвета текста, поверхностей и рамок задавать не нужно — они
+                  выводятся из фона так, чтобы контраст держался. Нечитаемую тему
+                  собрать нельзя.
+                </p>
+
+                <div className="edit-actions">
+                  <button className="mini primary" onClick={saveDraft}>
+                    Сохранить
+                  </button>
+                  <button className="mini" onClick={cancelDraft}>
+                    Отмена
+                  </button>
+                  {customThemes.some((t) => t.id === draft.id) && (
+                    <button className="mini ghost" onClick={() => deleteTheme(draft.id)}>
+                      Удалить
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <>
+                {[...THEMES, ...customThemes].map((seed) => (
+                  <div key={seed.id} className={`theme-row ${seed.id === theme.id ? "active" : ""}`}>
+                    <button className="theme" onClick={() => chooseTheme(seed)}>
+                      <span
+                        className="theme-swatch"
+                        style={{ background: seed.bg, color: seed.accent }}
+                      />
+                      {seed.name}
+                    </button>
+                    {isCustom(seed) && (
+                      <button
+                        className="track-act"
+                        onClick={() => {
+                          setDraft(seed);
+                          applyTheme(seed);
+                        }}
+                        title="Править тему"
+                      >
+                        ✎
+                      </button>
+                    )}
+                  </div>
+                ))}
+
+                <button className="mini new-theme" onClick={startNewTheme}>
+                  + Своя тема
+                </button>
+              </>
+            )}
           </div>
         )}
 

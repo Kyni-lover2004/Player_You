@@ -21,6 +21,7 @@ export type ThemeSeed = {
   accentEnd: string;
 };
 
+/** Встроенные темы. Свои живут в хранилище и добавляются к ним. */
 export const THEMES: ThemeSeed[] = [
   { id: "amethyst", name: "Аметист", bg: "#0c0a11", accent: "#ab66fd", accentEnd: "#6d28d9" },
   { id: "midnight", name: "Полночь", bg: "#080b14", accent: "#5b8dff", accentEnd: "#2b4fd0" },
@@ -90,18 +91,74 @@ export function contrast(a: string, b: string): number {
 export type Tokens = Record<string, string>;
 
 /**
- * Подбирает цвет, усиливая его отрыв от фона, пока не наберётся контраст.
+ * Наибольший контраст, достижимый на данном фоне.
  *
- * Константа тут не годится: она подошла бы под текущие десять тем и
- * провалилась бы на первой же своей. Условие держится на любом фоне.
+ * Величина не абстрактная: на фоне средней яркости ни белый, ни чёрный не
+ * дают семи к одному, и требовать AAA от такой темы бессмысленно. В худшей
+ * точке предел равен примерно 4.58 — то есть хуже AA не станет никогда.
  */
-function readable(bg: string, toward: string, start: number, minContrast: number): string {
-  let t = start;
-  let color = mix(bg, toward, t);
+export function maxContrast(bg: string): number {
+  return Math.max(contrast("#ffffff", bg), contrast("#000000", bg));
+}
 
-  while (contrast(color, bg) < minContrast && t < 1) {
+/**
+ * Переломная яркость: по одну сторону от неё выигрывает белый текст,
+ * по другую — чёрный. Ровно в точке оба дают около 4.58.
+ */
+const PIVOT = 0.179;
+
+/**
+ * Строит приподнятую поверхность, не переводя её через переломную яркость.
+ *
+ * Обычное правило простое: тёмной теме поверхности светлее, светлой темнее.
+ * Но у фона, стоящего вплотную к перелому, осветление уводит поверхность на
+ * другую сторону — и тогда фон требует одного цвета текста, а карточка
+ * противоположного. Читаемым не будет ни то, ни другое, поэтому в таких
+ * случаях поверхность уходит в обратную сторону.
+ */
+function elevate(bg: string, accent: string, step: number, accentPart: number): string {
+  const below = luminance(bg) < PIVOT;
+  const build = (toward: string) => mix(mix(bg, toward, step), accent, accentPart);
+
+  const usual = build(below ? "#ffffff" : "#000000");
+  if (luminance(usual) < PIVOT === below) return usual;
+
+  const flipped = build(below ? "#000000" : "#ffffff");
+  return luminance(flipped) < PIVOT === below ? flipped : usual;
+}
+
+/**
+ * Подбирает цвет текста, читаемый на всех основаниях сразу.
+ *
+ * Оснований несколько не для красоты: текст лежит и на фоне, и на
+ * приподнятых поверхностях. Ровно семь к одному на фоне означает меньше
+ * семи на поверхности, которая светлее, — поэтому цель проверяется по
+ * худшему основанию, а не по первому.
+ *
+ * Направление выбирается по фактическому контрасту, а не по порогу яркости:
+ * на среднем фоне белый и чёрный меняются местами, и порог тут врёт.
+ */
+function readable(grounds: string[], minContrast: number): string {
+  const base = grounds[0];
+
+  /** Худший контраст, который даст крайность на всех основаниях сразу. */
+  const reach = (toward: string) => Math.min(...grounds.map((ground) => contrast(toward, ground)));
+
+  // Направление выбирается по худшему основанию, а не по фону: поверхность
+  // с подмешанным акцентом может оказаться по другую сторону от переломной
+  // яркости, и тогда выбор «по фону» уводит не туда.
+  const toward = reach("#ffffff") >= reach("#000000") ? "#ffffff" : "#000000";
+
+  // Цель не выше достижимого: требовать AAA там, где предел ниже,
+  // означало бы крутить цикл до крайности впустую.
+  const target = Math.min(minContrast, reach(toward));
+
+  let t = 0.4;
+  let color = mix(base, toward, t);
+
+  while (grounds.some((ground) => contrast(color, ground) < target) && t < 1) {
     t = Math.min(1, t + 0.02);
-    color = mix(bg, toward, t);
+    color = mix(base, toward, t);
   }
 
   return color;
@@ -130,20 +187,30 @@ function inkFor(accent: string): string {
  */
 export function deriveTokens(seed: ThemeSeed): Tokens {
   const dark = luminance(seed.bg) < 0.4;
-  const toward = dark ? "#ffffff" : "#000000";
 
-  /** Осветляет либо затемняет фон и подмешивает каплю акцента. */
+  /** Приподнятая поверхность с каплей акцента: без неё фон везде был бы серым. */
   const surface = (step: number, accentPart: number) =>
-    mix(mix(seed.bg, toward, step), seed.accent, accentPart);
+    elevate(seed.bg, seed.accent, step, accentPart);
+
+  const surface1 = surface(dark ? 0.06 : 0.04, 0.05);
+  const surface2 = surface(dark ? 0.12 : 0.08, 0.07);
+
+  // Текст лежит на всех трёх основаниях, поэтому проверяется по всем трём.
+  const grounds = [seed.bg, surface1, surface2];
+  const ceiling = Math.min(
+    ...grounds.map((ground) => Math.max(contrast("#ffffff", ground), contrast("#000000", ground)))
+  );
 
   return {
     "--bg": seed.bg,
-    "--surface": surface(dark ? 0.06 : 0.04, 0.05),
-    "--surface-2": surface(dark ? 0.12 : 0.08, 0.07),
+    "--surface": surface1,
+    "--surface-2": surface2,
     "--border": surface(dark ? 0.18 : 0.14, 0.08),
-    // Порог AAA для основного текста, AA для приглушённого.
-    "--text": readable(seed.bg, toward, 0.9, 7),
-    "--muted": readable(seed.bg, toward, 0.52, 4.5),
+    // AAA для основного текста, AA для приглушённого — если фон это позволяет.
+    // Приглушённый цепляется за долю доступного предела, иначе на среднем
+    // фоне он слился бы с основным текстом: обоим досталось бы по максимуму.
+    "--text": readable(grounds, 7),
+    "--muted": readable(grounds, Math.min(4.5, ceiling * 0.72)),
     "--accent": seed.accent,
     "--accent-end": seed.accentEnd,
     "--accent-ink": inkFor(seed.accent),
@@ -153,9 +220,75 @@ export function deriveTokens(seed: ThemeSeed): Tokens {
   };
 }
 
+// ── Свои темы ────────────────────────────────────────────
+
+const STORAGE_KEY = "omen.themes.custom";
+
+/**
+ * Хранилище тем.
+ *
+ * Вынесено параметром, чтобы логику можно было проверить без браузера:
+ * тянуть ради этого целое окружение DOM в тесты было бы несоразмерно.
+ */
+export type ThemeStorage = Pick<Storage, "getItem" | "setItem">;
+
+function defaultStorage(): ThemeStorage | null {
+  return typeof localStorage === "undefined" ? null : localStorage;
+}
+
+/** Проверяет, что строка похожа на #rrggbb. */
+function isHex(value: unknown): value is string {
+  return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
+}
+
+/** Отбрасывает всё, что не похоже на тему: хранилище правят и руками. */
+function sanitize(value: unknown): ThemeSeed | null {
+  if (typeof value !== "object" || value === null) return null;
+  const seed = value as Partial<ThemeSeed>;
+
+  if (typeof seed.id !== "string" || !seed.id) return null;
+  if (typeof seed.name !== "string" || !seed.name.trim()) return null;
+  if (!isHex(seed.bg) || !isHex(seed.accent) || !isHex(seed.accentEnd)) return null;
+
+  return { id: seed.id, name: seed.name.trim(), bg: seed.bg, accent: seed.accent, accentEnd: seed.accentEnd };
+}
+
+/** Читает свои темы из хранилища. Повреждённая запись не роняет приложение. */
+export function loadCustomThemes(storage: ThemeStorage | null = defaultStorage()): ThemeSeed[] {
+  if (!storage) return [];
+
+  try {
+    const raw = storage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(sanitize).filter((theme): theme is ThemeSeed => theme !== null);
+  } catch {
+    return [];
+  }
+}
+
+/** Записывает свои темы в хранилище. */
+export function saveCustomThemes(
+  themes: ThemeSeed[],
+  storage: ThemeStorage | null = defaultStorage()
+): void {
+  storage?.setItem(STORAGE_KEY, JSON.stringify(themes));
+}
+
+/** Свежий идентификатор для своей темы. */
+export function newThemeId(): string {
+  return `custom-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+/** Отличает свою тему от встроенной. */
+export function isCustom(theme: ThemeSeed): boolean {
+  return theme.id.startsWith("custom-");
+}
+
 /** Находит тему по идентификатору, откатываясь к теме по умолчанию. */
-export function themeById(id: string | null): ThemeSeed {
-  return THEMES.find((theme) => theme.id === id) ?? THEMES[0];
+export function themeById(id: string | null, custom: ThemeSeed[] = loadCustomThemes()): ThemeSeed {
+  return [...THEMES, ...custom].find((theme) => theme.id === id) ?? THEMES[0];
 }
 
 /** Раскладывает токены темы по корневому элементу документа. */
