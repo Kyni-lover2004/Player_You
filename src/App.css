@@ -777,3 +777,117 @@ button.album-title {
 button.album-title:hover { background: var(--surface); border-color: var(--border); }
 
 .album-rename { flex: 1; min-width: 0; }
+
+/* ── Очередь загрузок ────────────────────────────────── */
+
+.jobs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 190px;
+  overflow-y: auto;
+}
+
+.job {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 11.5px;
+}
+
+.job-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.job-text {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+
+.job-side {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.job-done { border-color: var(--border); }
+.job-done .job-text { color: var(--text); }
+.job-done .job-side { color: var(--ok); }
+
+.job-error { border-color: var(--bad); }
+.job-error .job-text { color: var(--bad); }
+
+.job-why {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 11px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.job-why:hover { color: var(--text); }
+
+.job-bar {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.job-bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent-gradient);
+  transition: width 0.25s ease;
+}
+
+/* Перекодирование идёт без прогресса — ffmpeg о нём не сообщает,
+   поэтому полоса заполнена и переливается, а не врёт процентами. */
+.job-converting .job-bar span {
+  background: linear-gradient(90deg, var(--border), var(--accent), var(--border));
+  background-size: 200% 100%;
+  animation: sweep 1.1s linear infinite;
+}
+
+@keyframes sweep {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+code.job-error {
+  display: block;
+  padding: 7px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 130px;
+  overflow-y: auto;
+}
+
+/* Видно, откуда берётся порядок: из альбома или из всей коллекции. */
+.stage-context {
+  margin: 0 0 10px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+}

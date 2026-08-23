@@ -1,15 +1,26 @@
 /**
  * Машина состояний воспроизведения.
  *
- * Здесь нет ни React, ни аудиоэлемента: только чистые переходы. Восемь правил
- * из спеки живут именно тут, поэтому их можно проверить целиком, не запуская
+ * Здесь нет ни React, ни аудиоэлемента: только чистые переходы. Правила из
+ * спеки живут именно тут, поэтому их можно проверить целиком, не запуская
  * приложение и не слушая ушами.
  */
 
 export type RepeatMode = "off" | "all" | "one";
 
+/**
+ * Откуда берётся порядок воспроизведения.
+ *
+ * Без контекста альбом играл бы «поверх» библиотечного порядка: пока хватает
+ * очереди всё выглядит верно, а дальше перебор незаметно уходит в библиотеку.
+ */
+export type PlayContext = { kind: "library" } | { kind: "album"; id: number; title: string };
+
 export type PlayerState = {
-  /** Порядок библиотеки — исходный, как в списке на экране. */
+  /** Вся библиотека — к ней возвращаемся, выйдя из альбома. */
+  libraryIds: number[];
+  context: PlayContext;
+  /** Идентификаторы текущего контекста в исходном порядке. */
   order: number[];
   /** Порядок воспроизведения: перемешанный либо равный order. */
   playOrder: number[];
@@ -40,7 +51,7 @@ export type PlayerState = {
 export type Action =
   | { type: "library"; ids: number[] }
   | { type: "play"; id: number }
-  | { type: "playAll"; ids: number[] }
+  | { type: "playContext"; context: PlayContext; ids: number[]; startId?: number }
   | { type: "next"; reason: "user" | "ended" }
   | { type: "prev"; position: number }
   | { type: "toggleShuffle" }
@@ -64,6 +75,8 @@ export const PREV_RESTART_THRESHOLD = 3;
 /** Состояние пустого плеера. */
 export function initialState(): PlayerState {
   return {
+    libraryIds: [],
+    context: { kind: "library" },
     order: [],
     playOrder: [],
     shuffle: false,
@@ -84,6 +97,18 @@ export function randomShuffle(ids: number[]): number[] {
     [copy[i], copy[j]] = [copy[j], copy[i]];
   }
   return copy;
+}
+
+/** Собирает порядок воспроизведения, оставляя выбранный трек первым при шафле. */
+function buildPlayOrder(
+  ids: number[],
+  shuffle: boolean,
+  first: number | null,
+  deps: Deps
+): number[] {
+  if (!shuffle) return ids;
+  if (first === null || !ids.includes(first)) return deps.shuffle(ids);
+  return [first, ...deps.shuffle(ids.filter((id) => id !== first))];
 }
 
 /** Запускает трек с нуля: меняет текущий и поднимает поколение. */
@@ -107,6 +132,29 @@ function nextRepeat(mode: RepeatMode): RepeatMode {
   if (mode === "off") return "all";
   if (mode === "all") return "one";
   return "off";
+}
+
+/**
+ * Переключает контекст и начинает воспроизведение с заданного трека.
+ *
+ * Очередь очищается: она означает «что играет дальше», а смена контекста
+ * это как раз ответ на тот же вопрос, только целиком.
+ */
+function switchContext(
+  state: PlayerState,
+  context: PlayContext,
+  ids: number[],
+  startId: number | undefined,
+  deps: Deps
+): PlayerState {
+  if (ids.length === 0) return state;
+
+  const first = startId !== undefined && ids.includes(startId) ? startId : ids[0];
+  const playOrder = buildPlayOrder(ids, state.shuffle, first, deps);
+
+  return {
+    ...start({ ...state, context, order: ids, playOrder, queue: [] }, first, playOrder.indexOf(first)),
+  };
 }
 
 /** Переход к следующему треку. */
@@ -159,27 +207,26 @@ function applyShuffle(state: PlayerState, deps: Deps): PlayerState {
 
   if (!shuffle) {
     // Выключение: текущий трек доигрывает, следующим станет сосед
-    // по исходному порядку списка.
+    // по исходному порядку контекста.
     const cursor = state.currentId === null ? -1 : state.order.indexOf(state.currentId);
     return { ...state, shuffle, playOrder: state.order, cursor };
   }
 
-  // Включение: текущий остаётся играть и встаёт в начало нового порядка,
-  // перемешивается всё остальное.
-  const rest = state.order.filter((id) => id !== state.currentId);
-  const shuffled = deps.shuffle(rest);
-  const playOrder = state.currentId === null ? shuffled : [state.currentId, ...shuffled];
-
-  return { ...state, shuffle, playOrder, cursor: state.currentId === null ? -1 : 0 };
+  // Включение: текущий остаётся играть и встаёт в начало нового порядка.
+  const playOrder = buildPlayOrder(state.order, true, state.currentId, deps);
+  return {
+    ...state,
+    shuffle,
+    playOrder,
+    cursor: state.currentId === null ? -1 : playOrder.indexOf(state.currentId),
+  };
 }
 
-/** Убирает трек из библиотеки, не обрывая его, если он играет. */
+/** Убирает трек отовсюду, не обрывая его, если он играет. */
 function removeTrack(state: PlayerState, id: number): PlayerState {
   const removedAt = state.playOrder.indexOf(id);
 
-  const order = state.order.filter((x) => x !== id);
-  const playOrder = state.playOrder.filter((x) => x !== id);
-  const queue = state.queue.filter((x) => x !== id);
+  const without = (ids: number[]) => ids.filter((x) => x !== id);
 
   let cursor = state.cursor;
   if (id === state.currentId) {
@@ -190,21 +237,38 @@ function removeTrack(state: PlayerState, id: number): PlayerState {
     cursor -= 1;
   }
 
-  return { ...state, order, playOrder, queue, cursor };
-}
-
-/** Обновляет библиотеку, сохраняя текущий трек и очередь. */
-function setLibrary(state: PlayerState, ids: number[], deps: Deps): PlayerState {
-  const playOrder = state.shuffle ? deps.shuffle(ids) : ids;
-
-  // Текущий трек не сбрасывается, даже если он выпал из библиотеки:
-  // играющее не обрывается — то же правило, что и при удалении.
   return {
     ...state,
+    libraryIds: without(state.libraryIds),
+    order: without(state.order),
+    playOrder: without(state.playOrder),
+    queue: without(state.queue),
+    cursor,
+  };
+}
+
+/**
+ * Обновляет библиотеку.
+ *
+ * Пока играет альбом, его порядок не трогается: скачанный трек не должен
+ * вклиниваться в середину сборника, который ты слушаешь.
+ */
+function setLibrary(state: PlayerState, ids: number[], deps: Deps): PlayerState {
+  const queue = state.queue.filter((id) => ids.includes(id));
+
+  if (state.context.kind !== "library") {
+    return { ...state, libraryIds: ids, queue };
+  }
+
+  const playOrder = buildPlayOrder(ids, state.shuffle, state.currentId, deps);
+
+  return {
+    ...state,
+    libraryIds: ids,
     order: ids,
     playOrder,
     cursor: state.currentId === null ? -1 : playOrder.indexOf(state.currentId),
-    queue: state.queue.filter((id) => ids.includes(id)),
+    queue,
   };
 }
 
@@ -214,14 +278,11 @@ export function reduce(state: PlayerState, action: Action, deps: Deps): PlayerSt
     case "library":
       return setLibrary(state, action.ids, deps);
     case "play":
-      return start(state, action.id, state.playOrder.indexOf(action.id));
-    case "playAll": {
-      // Альбом играет через ту же очередь, что и ручное «играть следующим»:
-      // второй параллельный механизм означал бы второй набор багов.
-      if (action.ids.length === 0) return state;
-      const [first, ...rest] = action.ids;
-      return { ...start(state, first, state.playOrder.indexOf(first)), queue: rest };
-    }
+      // Выбор трека в коллекции возвращает плеер к библиотечному порядку:
+      // иначе он продолжил бы перебирать альбом, который ты уже покинул.
+      return switchContext(state, { kind: "library" }, state.libraryIds, action.id, deps);
+    case "playContext":
+      return switchContext(state, action.context, action.ids, action.startId, deps);
     case "next":
       return advance(state, action.reason, deps);
     case "prev":

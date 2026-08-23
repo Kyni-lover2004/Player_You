@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { usePlayer } from "./player/usePlayer";
 import { THEMES, type ThemeSeed, applyTheme, themeById } from "./theme/themes";
 import "./App.css";
@@ -26,6 +27,19 @@ type Album = {
   created_at: number;
   track_count: number;
   cover_path: string | null;
+};
+
+/** Стадия работы над одной ссылкой. */
+type JobStatus = "waiting" | "downloading" | "converting" | "done" | "error";
+
+/** Ссылка в очереди загрузок. */
+type Job = {
+  id: number;
+  url: string;
+  status: JobStatus;
+  percent: number;
+  title: string | null;
+  error: string | null;
 };
 
 type Status = { kind: "idle" } | { kind: "working" } | { kind: "error"; message: string };
@@ -126,6 +140,8 @@ function Ring({
 function App() {
   const [url, setUrl] = useState("");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [openError, setOpenError] = useState<number | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
 
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -173,7 +189,6 @@ function App() {
     );
   }, [tracks, search]);
   const current = player.currentId === null ? null : byId.get(player.currentId) ?? null;
-  const busy = status.kind === "working";
   const progress = player.duration > 0 ? (player.position / player.duration) * 100 : 0;
 
   /** Перечитывает библиотеку из базы. */
@@ -197,6 +212,16 @@ function App() {
   useEffect(() => {
     refresh();
     refreshAlbums();
+
+    // Rust шлёт снимок очереди целиком: список короткий, а сверять частичные
+    // обновления на приёмной стороне — верный источник рассинхрона.
+    const unlistenQueue = listen<Job[]>("downloads", (event) => setJobs(event.payload));
+    const unlistenTrack = listen<Track>("track-added", () => refresh());
+
+    return () => {
+      void unlistenQueue.then((off) => off());
+      void unlistenTrack.then((off) => off());
+    };
   }, []);
 
   /** Открывает альбом и подгружает его треки. */
@@ -260,16 +285,23 @@ function App() {
     }
   }
 
-  /** Скачивает трек по ссылке, затем обновляет библиотеку и запускает новинку. */
+  /** Ставит ссылку в очередь загрузок. Музыка при этом не прерывается. */
   async function handleDownload() {
-    if (!url.trim() || busy) return;
-    setStatus({ kind: "working" });
+    const link = url.trim();
+    if (!link) return;
+    setUrl("");
     try {
-      const track = await invoke<Track>("download_track", { url });
-      setStatus({ kind: "idle" });
-      setUrl("");
-      await refresh();
-      player.controls.play(track.id);
+      setJobs(await invoke<Job[]>("enqueue_download", { url: link }));
+    } catch (error) {
+      setStatus({ kind: "error", message: String(error) });
+    }
+  }
+
+  /** Убирает из очереди завершённые и упавшие задания. */
+  async function clearFinished() {
+    setOpenError(null);
+    try {
+      setJobs(await invoke<Job[]>("clear_finished_downloads"));
     } catch (error) {
       setStatus({ kind: "error", message: String(error) });
     }
@@ -582,7 +614,12 @@ function App() {
             <div className="album-actions">
               <button
                 className="mini primary"
-                onClick={() => player.controls.playAll(albumTracks.map((t) => t.id))}
+                onClick={() =>
+                  player.controls.playContext(
+                    { kind: "album", id: openAlbum.id, title: openAlbum.title },
+                    albumTracks.map((t) => t.id)
+                  )
+                }
                 disabled={albumTracks.length === 0}
               >
                 Включить
@@ -636,7 +673,13 @@ function App() {
                 >
                   <button
                     className="track-main"
-                    onClick={() => player.controls.play(track.id)}
+                    onClick={() =>
+                      player.controls.playContext(
+                        { kind: "album", id: openAlbum.id, title: openAlbum.title },
+                        albumTracks.map((t) => t.id),
+                        track.id
+                      )
+                    }
                   >
                     <Cover track={track} />
                     <span className="track-text">
@@ -725,6 +768,58 @@ function App() {
         )}
 
         <div className="add">
+          {jobs.length > 0 && (
+            <div className="jobs">
+              {jobs.map((job) => (
+                <div key={job.id} className={`job job-${job.status}`}>
+                  <div className="job-row">
+                    <span className="job-text">
+                      {job.status === "error"
+                        ? "Не вышло"
+                        : job.status === "done"
+                          ? job.title ?? "Готово"
+                          : job.status === "converting"
+                            ? "Перекодирую"
+                            : job.status === "waiting"
+                              ? "Жду очереди"
+                              : "Качаю"}
+                    </span>
+                    <span className="job-side">
+                      {job.status === "downloading" && `${Math.round(job.percent)}%`}
+                      {job.status === "done" && "✓"}
+                      {job.status === "error" && (
+                        <button
+                          className="job-why"
+                          onClick={() => setOpenError(openError === job.id ? null : job.id)}
+                        >
+                          почему
+                        </button>
+                      )}
+                    </span>
+                  </div>
+
+                  {(job.status === "downloading" || job.status === "converting") && (
+                    <div className="job-bar">
+                      <span
+                        style={{
+                          width: job.status === "converting" ? "100%" : `${job.percent}%`,
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  {openError === job.id && job.error && <code className="job-error">{job.error}</code>}
+                </div>
+              ))}
+
+              {jobs.some((job) => job.status === "done" || job.status === "error") && (
+                <button className="mini ghost" onClick={clearFinished}>
+                  Убрать завершённые
+                </button>
+              )}
+            </div>
+          )}
+
           <div className="add-row">
             <input
               className="url-input"
@@ -733,18 +828,16 @@ function App() {
               onKeyDown={(e) => e.key === "Enter" && handleDownload()}
               placeholder="ссылка на видео"
               spellCheck={false}
-              disabled={busy}
             />
             <button
               className="go"
               onClick={handleDownload}
-              disabled={busy || !url.trim()}
-              title="Скачать"
+              disabled={!url.trim()}
+              title="Поставить в очередь"
             >
-              {busy ? "…" : "↓"}
+              ↓
             </button>
           </div>
-          {busy && <p className="status working">Забираю звук. Музыка не прервётся.</p>}
           {status.kind === "error" && (
             <p className="status error">
               Не вышло<code>{status.message}</code>
@@ -775,6 +868,9 @@ function App() {
             )}
 
             <div className="meta">
+              {player.context.kind === "album" && (
+                <p className="stage-context">Альбом · {player.context.title}</p>
+              )}
               <h2 className="stage-title">{current.title}</h2>
               {current.artist && <p className="stage-artist">{current.artist}</p>}
             </div>

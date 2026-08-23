@@ -181,32 +181,102 @@ describe("очередь", () => {
   });
 });
 
-describe("включение альбома", () => {
-  it("первый трек играет, остальные встают в очередь по порядку", () => {
-    const state = run([LIBRARY, { type: "playAll", ids: [3, 1, 4] }]);
+describe("контекст воспроизведения", () => {
+  const ALBUM = { kind: "album", id: 7, title: "Зима" } as const;
+
+  it("альбом играет своим порядком, а не библиотечным", () => {
+    const state = run([LIBRARY, { type: "playContext", context: ALBUM, ids: [3, 1] }]);
     expect(state.currentId).toBe(3);
-    expect(state.queue).toEqual([1, 4]);
+    expect(state.order).toEqual([3, 1]);
+    expect(state.context).toEqual(ALBUM);
   });
 
-  it("новый альбом заменяет прежнюю очередь, а не дополняет её", () => {
+  it("перебор вперёд не выходит за пределы альбома", () => {
+    // Тот самый баг: очередь кончалась, и следующий трек брался из библиотеки.
+    let state = run([LIBRARY, { type: "playContext", context: ALBUM, ids: [3, 1] }]);
+    state = reduce(state, { type: "next", reason: "user" }, deps);
+    expect(state.currentId).toBe(1);
+
+    // Перебор обязан упереться в конец альбома, а не уйти в библиотеку.
+    state = reduce(state, { type: "next", reason: "user" }, deps);
+    expect(state.atEnd).toBe(true);
+    expect(state.currentId).toBe(1);
+  });
+
+  it("кнопка «назад» остаётся внутри альбома", () => {
+    // Раньше «назад» вообще не знала про альбом и сразу уходила в библиотеку.
+    let state = run([LIBRARY, { type: "playContext", context: ALBUM, ids: [4, 2] }]);
+    state = reduce(state, { type: "next", reason: "user" }, deps);
+    expect(state.currentId).toBe(2);
+
+    state = reduce(state, { type: "prev", position: 0.5 }, deps);
+    expect(state.currentId).toBe(4);
+  });
+
+  it("вперёд и назад подряд не выбрасывают из альбома", () => {
+    // Сценарий из жалобы: пара нажатий туда-сюда — и играет чужой трек.
+    let state = run([LIBRARY, { type: "playContext", context: ALBUM, ids: [4, 2, 1] }]);
+    for (const step of ["next", "next", "prev", "next", "prev", "prev"] as const) {
+      state =
+        step === "next"
+          ? reduce(state, { type: "next", reason: "user" }, deps)
+          : reduce(state, { type: "prev", position: 0.5 }, deps);
+      expect(state.order).toEqual([4, 2, 1]);
+      expect([4, 2, 1]).toContain(state.currentId);
+    }
+  });
+
+  it("повтор всех крутит альбом, а не библиотеку", () => {
+    let state = run([
+      LIBRARY,
+      { type: "cycleRepeat" },
+      { type: "playContext", context: ALBUM, ids: [3, 1] },
+    ]);
+    state = reduce(state, { type: "next", reason: "ended" }, deps);
+    state = reduce(state, { type: "next", reason: "ended" }, deps);
+    expect(state.currentId).toBe(3);
+  });
+
+  it("выбор трека в коллекции возвращает библиотечный порядок", () => {
+    let state = run([LIBRARY, { type: "playContext", context: ALBUM, ids: [3, 1] }]);
+    state = reduce(state, { type: "play", id: 2 }, deps);
+
+    expect(state.context).toEqual({ kind: "library" });
+    expect(state.order).toEqual([1, 2, 3, 4]);
+    expect(reduce(state, { type: "next", reason: "user" }, deps).currentId).toBe(3);
+  });
+
+  it("пополнение библиотеки не вклинивается в играющий альбом", () => {
+    // Скачанный трек не должен появляться в середине сборника.
+    let state = run([LIBRARY, { type: "playContext", context: ALBUM, ids: [3, 1] }]);
+    state = reduce(state, { type: "library", ids: [1, 2, 3, 4, 5] }, deps);
+
+    expect(state.order).toEqual([3, 1]);
+    expect(state.libraryIds).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it("смена контекста очищает очередь", () => {
     const state = run([
       LIBRARY,
       { type: "enqueue", id: 2 },
-      { type: "playAll", ids: [3, 4] },
+      { type: "playContext", context: ALBUM, ids: [3, 1] },
     ]);
-    expect(state.queue).toEqual([4]);
+    expect(state.queue).toEqual([]);
   });
 
   it("пустой альбом ничего не меняет", () => {
     const before = run([LIBRARY, { type: "play", id: 1 }]);
-    const after = reduce(before, { type: "playAll", ids: [] }, deps);
+    const after = reduce(before, { type: "playContext", context: ALBUM, ids: [] }, deps);
     expect(after).toEqual(before);
   });
 
-  it("альбом из одного трека не оставляет мусора в очереди", () => {
-    const state = run([LIBRARY, { type: "playAll", ids: [2] }]);
+  it("альбом можно включить с середины", () => {
+    const state = run([
+      LIBRARY,
+      { type: "playContext", context: ALBUM, ids: [4, 2, 1], startId: 2 },
+    ]);
     expect(state.currentId).toBe(2);
-    expect(state.queue).toEqual([]);
+    expect(reduce(state, { type: "next", reason: "user" }, deps).currentId).toBe(1);
   });
 });
 

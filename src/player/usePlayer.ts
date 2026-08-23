@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
   type Action,
+  type PlayContext,
   type Deps,
   type PlayerState,
   type RepeatMode,
@@ -95,8 +96,13 @@ export function usePlayer(tracks: PlayableTrack[], sourceFor: (id: number) => st
     /** Ставит трек текущим и запускает его. */
     play: (id: number) => dispatch({ type: "play", id }),
 
-    /** Включает альбом: первый трек играет, остальные встают в очередь. */
-    playAll: (ids: number[]) => dispatch({ type: "playAll", ids }),
+    /**
+     * Включает альбом: плеер переключается на его порядок целиком.
+     *
+     * Не через очередь: очередь кончается, и перебор уходил бы в библиотеку.
+     */
+    playContext: (context: PlayContext, ids: number[], startId?: number) =>
+      dispatch({ type: "playContext", context, ids, startId }),
 
     /** Пауза и снятие с паузы. Перемотку это не затрагивает. */
     toggle: () => {
@@ -151,6 +157,7 @@ export function usePlayer(tracks: PlayableTrack[], sourceFor: (id: number) => st
     currentId: state.currentId,
     shuffle: state.shuffle,
     repeat: state.repeat as RepeatMode,
+    context: state.context,
     queue: state.queue,
     queueLength: state.queue.length,
     atEnd: state.atEnd,
