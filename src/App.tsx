@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { usePlayer } from "./player/usePlayer";
 import "./App.css";
 
 /** Трек в библиотеке. Поля повторяют структуру db::Track на Rust-стороне. */
@@ -47,19 +48,28 @@ function App() {
   const [url, setUrl] = useState("");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [tracks, setTracks] = useState<Track[]>([]);
-  const [current, setCurrent] = useState<Track | null>(null);
 
   const [editingId, setEditingId] = useState<number | null>(null);
   const [draftArtist, setDraftArtist] = useState("");
   const [draftTitle, setDraftTitle] = useState("");
 
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const [duration, setDuration] = useState(0);
-  const [position, setPosition] = useState(0);
-  const [playing, setPlaying] = useState(false);
   const [scrubbing, setScrubbing] = useState(false);
   const [seekCheck, setSeekCheck] = useState<SeekCheck | null>(null);
   const pendingSeek = useRef<number | null>(null);
+
+  const byId = useMemo(() => new Map(tracks.map((t) => [t.id, t])), [tracks]);
+
+  /** Путь до файла трека в виде, понятном вебвью. */
+  const sourceFor = useCallback(
+    (id: number) => {
+      const track = byId.get(id);
+      return track ? convertFileSrc(track.file_path) : "";
+    },
+    [byId]
+  );
+
+  const player = usePlayer(tracks, sourceFor);
+  const current = player.currentId === null ? null : byId.get(player.currentId) ?? null;
 
   const busy = status.kind === "working";
 
@@ -91,12 +101,10 @@ function App() {
     }
   }
 
-  /** Ставит трек текущим и сбрасывает состояние проигрывания. */
+  /** Ставит трек текущим и запускает его. */
   function selectTrack(track: Track) {
-    setCurrent(track);
-    setPosition(0);
-    setDuration(track.duration_secs ?? 0);
     setSeekCheck(null);
+    player.controls.play(track.id);
   }
 
   /** Открывает правку трека, заполняя форму текущими значениями. */
@@ -111,10 +119,9 @@ function App() {
     setEditingId(null);
   }
 
-  /** Заменяет трек в списке и, если он играет, в плеере. */
+  /** Заменяет трек в списке. Плеер подхватит правку сам: он берёт трек по id. */
   function applyUpdate(updated: Track) {
     setTracks((previous) => previous.map((t) => (t.id === updated.id ? updated : t)));
-    setCurrent((playingNow) => (playingNow?.id === updated.id ? updated : playingNow));
   }
 
   /** Сохраняет правку: трек помечается как правленный и выпадает из авточистки. */
@@ -145,24 +152,14 @@ function App() {
     }
   }
 
-  /** Переключает воспроизведение и паузу. */
-  function togglePlay() {
-    const audio = audioRef.current;
-    if (!audio || !current) return;
-    if (audio.paused) void audio.play();
-    else audio.pause();
-  }
-
   /**
    * Применяет перемотку и запоминает запрошенную позицию,
    * чтобы после события seeked сравнить её с фактической.
    */
   function commitSeek(value: number) {
-    const audio = audioRef.current;
     setScrubbing(false);
-    if (!audio) return;
     pendingSeek.current = value;
-    audio.currentTime = value;
+    player.controls.seek(value);
   }
 
   const driftMs = seekCheck
@@ -272,6 +269,14 @@ function App() {
                   </span>
                 </span>
               </button>
+              <button
+                className="track-edit"
+                onClick={() => player.controls.enqueue(track.id)}
+                disabled={track.missing}
+                title="Играть следующим"
+              >
+                ↴
+              </button>
               <button className="track-edit" onClick={() => startEdit(track)} title="Править">
                 ✎
               </button>
@@ -288,30 +293,69 @@ function App() {
               <strong>{current.title}</strong>
               {current.artist && <span className="now-artist">{current.artist}</span>}
             </span>
+            {player.queueLength > 0 && (
+              <span className="queue-badge" title="Треков в очереди">
+                в очереди: {player.queueLength}
+              </span>
+            )}
           </div>
 
           <div className="controls">
-            <button className="play" onClick={togglePlay}>
-              {playing ? "❚❚" : "▶"}
+            <button
+              className={`icon ${player.shuffle ? "on" : ""}`}
+              onClick={player.controls.toggleShuffle}
+              title={player.shuffle ? "Шафл включён" : "Шафл выключен"}
+            >
+              ⇄
             </button>
 
-            <span className="time">{formatTime(position)}</span>
+            <button className="icon" onClick={player.controls.prev} title="Назад">
+              ⏮
+            </button>
+
+            <button className="play" onClick={player.controls.toggle}>
+              {player.playing ? "❚❚" : "▶"}
+            </button>
+
+            <button className="icon" onClick={player.controls.next} title="Вперёд">
+              ⏭
+            </button>
+
+            <button
+              className={`icon ${player.repeat !== "off" ? "on" : ""}`}
+              onClick={player.controls.cycleRepeat}
+              title={
+                player.repeat === "off"
+                  ? "Повтор выключен"
+                  : player.repeat === "all"
+                    ? "Повтор всех"
+                    : "Повтор одного"
+              }
+            >
+              ↻{player.repeat === "one" && <sup>1</sup>}
+            </button>
+          </div>
+
+          <div className="timeline">
+            <span className="time">{formatTime(player.position)}</span>
 
             <input
               className="seek"
               type="range"
               min={0}
-              max={duration || 0}
+              max={player.duration || 0}
               step={0.01}
-              value={position}
+              value={player.position}
               onPointerDown={() => setScrubbing(true)}
-              onChange={(e) => setPosition(Number(e.target.value))}
+              onChange={(e) => player.setPosition(Number(e.target.value))}
               onPointerUp={(e) => commitSeek(Number((e.target as HTMLInputElement).value))}
               onKeyUp={(e) => commitSeek(Number((e.target as HTMLInputElement).value))}
             />
 
-            <span className="time">{formatTime(duration)}</span>
+            <span className="time">{formatTime(player.duration)}</span>
           </div>
+
+          {player.atEnd && <div className="drift">список кончился, повтор выключен</div>}
 
           {driftMs !== null && (
             <div className={`drift ${driftMs < 100 ? "good" : "bad"}`}>
@@ -320,14 +364,11 @@ function App() {
             </div>
           )}
 
+          {/* src задаётся связкой императивно: смена поколения — единственный
+              сигнал начать трек с нуля, и React тут только мешал бы. */}
           <audio
-            ref={audioRef}
-            src={convertFileSrc(current.file_path)}
-            preload="metadata"
-            onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
-            onTimeUpdate={(e) => !scrubbing && setPosition(e.currentTarget.currentTime)}
-            onPlay={() => setPlaying(true)}
-            onPause={() => setPlaying(false)}
+            {...player.audioProps}
+            onTimeUpdate={(e) => !scrubbing && player.setPosition(e.currentTarget.currentTime)}
             onSeeked={(e) => {
               if (pendingSeek.current === null) return;
               setSeekCheck({
@@ -339,6 +380,7 @@ function App() {
           />
         </footer>
       )}
+
     </main>
   );
 }
