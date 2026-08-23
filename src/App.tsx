@@ -44,6 +44,28 @@ type Job = {
 
 type Status = { kind: "idle" } | { kind: "working" } | { kind: "error"; message: string };
 
+/** Что удалось узнать о плейлисте, не скачивая его. */
+type PlaylistInfo = { title: string | null; ids: string[] };
+
+/**
+ * Возвращает идентификатор плейлиста из ссылки, если он там есть.
+ *
+ * Ссылка вида watch?v=...&list=... неоднозначна по природе: она указывает
+ * и на одно видео, и на список. Решать за человека тут нельзя.
+ */
+function playlistParam(link: string): string | null {
+  try {
+    return new URL(link).searchParams.get("list");
+  } catch {
+    return null;
+  }
+}
+
+/** Склоняет слово «видео» по числу — оно не склоняется, но число нужно. */
+function videoCount(count: number): string {
+  return `${count} видео`;
+}
+
 /** Склоняет слово «трек» по числу: 1 трек, 2 трека, 5 треков. */
 function plural(count: number): string {
   const tens = count % 100;
@@ -142,6 +164,8 @@ function App() {
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [jobs, setJobs] = useState<Job[]>([]);
   const [openError, setOpenError] = useState<number | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [pending, setPending] = useState<{ link: string; info: PlaylistInfo } | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
 
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -285,15 +309,58 @@ function App() {
     }
   }
 
-  /** Ставит ссылку в очередь загрузок. Музыка при этом не прерывается. */
-  async function handleDownload() {
-    const link = url.trim();
-    if (!link) return;
+  /** Ставит одну ссылку в очередь загрузок. */
+  async function enqueueOne(link: string) {
+    setPending(null);
     setUrl("");
     try {
       setJobs(await invoke<Job[]>("enqueue_download", { url: link }));
     } catch (error) {
       setStatus({ kind: "error", message: String(error) });
+    }
+  }
+
+  /** Ставит в очередь весь плейлист — по отдельному заданию на видео. */
+  async function enqueueAll(ids: string[]) {
+    setPending(null);
+    setUrl("");
+    try {
+      const urls = ids.map((id) => `https://www.youtube.com/watch?v=${id}`);
+      setJobs(await invoke<Job[]>("enqueue_many", { urls }));
+    } catch (error) {
+      setStatus({ kind: "error", message: String(error) });
+    }
+  }
+
+  /**
+   * Разбирает вставленную ссылку.
+   *
+   * Ссылка с плейлистом не качается молча: приложение спрашивает, а не решает.
+   */
+  async function handleDownload() {
+    const link = url.trim();
+    if (!link) return;
+
+    if (!playlistParam(link)) {
+      void enqueueOne(link);
+      return;
+    }
+
+    setProbing(true);
+    try {
+      const info = await invoke<PlaylistInfo>("probe_playlist", { url: link });
+      if (info.ids.length <= 1) {
+        // Список из одного видео спрашивать не о чем.
+        void enqueueOne(link);
+      } else {
+        setPending({ link, info });
+      }
+    } catch {
+      // Плейлист не открылся — качаем то видео, на которое ссылка указывает
+      // напрямую. Это лучше, чем отказать целиком.
+      void enqueueOne(link);
+    } finally {
+      setProbing(false);
     }
   }
 
@@ -768,6 +835,32 @@ function App() {
         )}
 
         <div className="add">
+          {pending && (
+            <div className="ask">
+              <p className="ask-text">
+                Ссылка ведёт на плейлист
+                {pending.info.title && <> «{pending.info.title}»</>} —{" "}
+                {videoCount(pending.info.ids.length)}.
+              </p>
+              {playlistParam(pending.link)?.startsWith("RD") && (
+                <p className="ask-note">
+                  Это автоподборка YouTube, а не собранный кем-то список.
+                </p>
+              )}
+              <div className="ask-actions">
+                <button className="mini primary" onClick={() => enqueueAll(pending.info.ids)}>
+                  Весь плейлист
+                </button>
+                <button className="mini" onClick={() => enqueueOne(pending.link)}>
+                  Только это видео
+                </button>
+                <button className="mini ghost" onClick={() => setPending(null)}>
+                  Отмена
+                </button>
+              </div>
+            </div>
+          )}
+
           {jobs.length > 0 && (
             <div className="jobs">
               {jobs.map((job) => (
@@ -828,14 +921,15 @@ function App() {
               onKeyDown={(e) => e.key === "Enter" && handleDownload()}
               placeholder="ссылка на видео"
               spellCheck={false}
+              disabled={probing}
             />
             <button
               className="go"
               onClick={handleDownload}
-              disabled={!url.trim()}
+              disabled={probing || !url.trim()}
               title="Поставить в очередь"
             >
-              ↓
+              {probing ? "…" : "↓"}
             </button>
           </div>
           {status.kind === "error" && (

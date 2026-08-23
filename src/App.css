@@ -891,3 +891,26 @@ code.job-error {
   text-transform: uppercase;
   color: var(--accent);
 }
+
+/* ── Вопрос про плейлист ─────────────────────────────── */
+
+.ask {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px 12px;
+  border-radius: 11px;
+  border: 1px solid var(--accent);
+  background: var(--surface);
+}
+
+.ask-text { margin: 0; font-size: 12px; line-height: 1.45; }
+
+.ask-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.ask-actions { display: flex; flex-wrap: wrap; gap: 6px; }
