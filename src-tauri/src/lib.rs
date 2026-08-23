@@ -321,6 +321,77 @@ fn library(state: tauri::State<'_, Library>) -> Result<Vec<db::Track>, String> {
     db::all_tracks(&conn)
 }
 
+// ── Альбомы ──────────────────────────────────────────────
+//
+// Альбом здесь — сборник, собранный руками, а не запись из метаданных.
+// YouTube про альбомы ничего не сообщает, и выдумывать их было бы враньём.
+
+/// Возвращает все альбомы, свежие сверху.
+#[tauri::command]
+fn albums(state: tauri::State<'_, Library>) -> Result<Vec<db::Album>, String> {
+    let conn = state.0.lock().map_err(|_| "библиотека занята")?;
+    db::all_albums(&conn)
+}
+
+/// Возвращает треки альбома в заданном порядке.
+#[tauri::command]
+fn album_tracks(state: tauri::State<'_, Library>, album_id: i64) -> Result<Vec<db::Track>, String> {
+    let conn = state.0.lock().map_err(|_| "библиотека занята")?;
+    db::album_tracks(&conn, album_id)
+}
+
+/// Создаёт альбом и возвращает обновлённый список.
+#[tauri::command]
+fn create_album(state: tauri::State<'_, Library>, title: String) -> Result<Vec<db::Album>, String> {
+    let conn = state.0.lock().map_err(|_| "библиотека занята")?;
+    db::create_album(&conn, &title)?;
+    db::all_albums(&conn)
+}
+
+/// Переименовывает альбом.
+#[tauri::command]
+fn rename_album(
+    state: tauri::State<'_, Library>,
+    id: i64,
+    title: String,
+) -> Result<Vec<db::Album>, String> {
+    let conn = state.0.lock().map_err(|_| "библиотека занята")?;
+    db::rename_album(&conn, id, &title)?;
+    db::all_albums(&conn)
+}
+
+/// Удаляет альбом. Треки при этом остаются в коллекции.
+#[tauri::command]
+fn delete_album(state: tauri::State<'_, Library>, id: i64) -> Result<Vec<db::Album>, String> {
+    let conn = state.0.lock().map_err(|_| "библиотека занята")?;
+    db::delete_album(&conn, id)?;
+    db::all_albums(&conn)
+}
+
+/// Кладёт трек в конец альбома. Повторное добавление ничего не меняет.
+#[tauri::command]
+fn add_to_album(
+    state: tauri::State<'_, Library>,
+    album_id: i64,
+    track_id: i64,
+) -> Result<Vec<db::Track>, String> {
+    let conn = state.0.lock().map_err(|_| "библиотека занята")?;
+    db::add_to_album(&conn, album_id, track_id)?;
+    db::album_tracks(&conn, album_id)
+}
+
+/// Убирает трек из альбома. Сам трек остаётся в коллекции.
+#[tauri::command]
+fn remove_from_album(
+    state: tauri::State<'_, Library>,
+    album_id: i64,
+    track_id: i64,
+) -> Result<Vec<db::Track>, String> {
+    let conn = state.0.lock().map_err(|_| "библиотека занята")?;
+    db::remove_from_album(&conn, album_id, track_id)?;
+    db::album_tracks(&conn, album_id)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -343,7 +414,19 @@ pub fn run() {
             app.manage(Library(Mutex::new(conn)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![download_track, library, save_track_title, reset_track_title])
+        .invoke_handler(tauri::generate_handler![
+            download_track,
+            library,
+            save_track_title,
+            reset_track_title,
+            albums,
+            album_tracks,
+            create_album,
+            rename_album,
+            delete_album,
+            add_to_album,
+            remove_from_album
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

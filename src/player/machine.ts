@@ -40,11 +40,14 @@ export type PlayerState = {
 export type Action =
   | { type: "library"; ids: number[] }
   | { type: "play"; id: number }
+  | { type: "playAll"; ids: number[] }
   | { type: "next"; reason: "user" | "ended" }
   | { type: "prev"; position: number }
   | { type: "toggleShuffle" }
   | { type: "cycleRepeat" }
   | { type: "enqueue"; id: number }
+  | { type: "dequeue"; index: number }
+  | { type: "clearQueue" }
   | { type: "remove"; id: number };
 
 /** Перемешиватель вынесен наружу, чтобы тесты были воспроизводимыми. */
@@ -212,6 +215,13 @@ export function reduce(state: PlayerState, action: Action, deps: Deps): PlayerSt
       return setLibrary(state, action.ids, deps);
     case "play":
       return start(state, action.id, state.playOrder.indexOf(action.id));
+    case "playAll": {
+      // Альбом играет через ту же очередь, что и ручное «играть следующим»:
+      // второй параллельный механизм означал бы второй набор багов.
+      if (action.ids.length === 0) return state;
+      const [first, ...rest] = action.ids;
+      return { ...start(state, first, state.playOrder.indexOf(first)), queue: rest };
+    }
     case "next":
       return advance(state, action.reason, deps);
     case "prev":
@@ -222,6 +232,15 @@ export function reduce(state: PlayerState, action: Action, deps: Deps): PlayerSt
       return { ...state, repeat: nextRepeat(state.repeat) };
     case "enqueue":
       return { ...state, queue: [...state.queue, action.id] };
+    case "dequeue":
+      // Убираем по позиции, а не по идентификатору: один и тот же трек
+      // можно поставить в очередь дважды, и вынуть надо именно один.
+      return {
+        ...state,
+        queue: state.queue.filter((_, index) => index !== action.index),
+      };
+    case "clearQueue":
+      return { ...state, queue: [] };
     case "remove":
       return removeTrack(state, action.id);
   }

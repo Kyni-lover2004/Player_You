@@ -95,6 +95,9 @@ export function usePlayer(tracks: PlayableTrack[], sourceFor: (id: number) => st
     /** Ставит трек текущим и запускает его. */
     play: (id: number) => dispatch({ type: "play", id }),
 
+    /** Включает альбом: первый трек играет, остальные встают в очередь. */
+    playAll: (ids: number[]) => dispatch({ type: "playAll", ids }),
+
     /** Пауза и снятие с паузы. Перемотку это не затрагивает. */
     toggle: () => {
       const audio = audioRef.current;
@@ -116,6 +119,8 @@ export function usePlayer(tracks: PlayableTrack[], sourceFor: (id: number) => st
     toggleShuffle: () => dispatchQuiet({ type: "toggleShuffle" }),
     cycleRepeat: () => dispatchQuiet({ type: "cycleRepeat" }),
     enqueue: (id: number) => dispatchQuiet({ type: "enqueue", id }),
+    dequeue: (index: number) => dispatchQuiet({ type: "dequeue", index }),
+    clearQueue: () => dispatchQuiet({ type: "clearQueue" }),
 
     /**
      * Перемотка. Позицию задаём напрямую аудиоэлементу: он сам сохраняет
@@ -146,6 +151,7 @@ export function usePlayer(tracks: PlayableTrack[], sourceFor: (id: number) => st
     currentId: state.currentId,
     shuffle: state.shuffle,
     repeat: state.repeat as RepeatMode,
+    queue: state.queue,
     queueLength: state.queue.length,
     atEnd: state.atEnd,
     playing,

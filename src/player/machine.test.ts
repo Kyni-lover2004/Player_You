@@ -140,6 +140,74 @@ describe("очередь", () => {
     const afterQueue = reduce(fromQueue, { type: "next", reason: "ended" }, deps);
     expect(afterQueue.currentId).toBe(2);
   });
+
+  it("трек можно вынуть из очереди по позиции", () => {
+    const state = run([
+      LIBRARY,
+      { type: "enqueue", id: 3 },
+      { type: "enqueue", id: 4 },
+      { type: "dequeue", index: 0 },
+    ]);
+    expect(state.queue).toEqual([4]);
+  });
+
+  it("одинаковые треки в очереди убираются по одному", () => {
+    // Поставить трек дважды — законно, поэтому удаление по идентификатору
+    // вынесло бы оба сразу.
+    const state = run([
+      LIBRARY,
+      { type: "enqueue", id: 3 },
+      { type: "enqueue", id: 3 },
+      { type: "dequeue", index: 0 },
+    ]);
+    expect(state.queue).toEqual([3]);
+  });
+
+  it("очередь очищается целиком", () => {
+    const state = run([
+      LIBRARY,
+      { type: "enqueue", id: 2 },
+      { type: "enqueue", id: 3 },
+      { type: "clearQueue" },
+    ]);
+    expect(state.queue).toEqual([]);
+  });
+
+  it("очистка очереди не трогает текущий трек", () => {
+    const before = run([LIBRARY, { type: "play", id: 1 }, { type: "enqueue", id: 3 }]);
+    const after = reduce(before, { type: "clearQueue" }, deps);
+    expect(after.currentId).toBe(1);
+    expect(after.generation).toBe(before.generation);
+  });
+});
+
+describe("включение альбома", () => {
+  it("первый трек играет, остальные встают в очередь по порядку", () => {
+    const state = run([LIBRARY, { type: "playAll", ids: [3, 1, 4] }]);
+    expect(state.currentId).toBe(3);
+    expect(state.queue).toEqual([1, 4]);
+  });
+
+  it("новый альбом заменяет прежнюю очередь, а не дополняет её", () => {
+    const state = run([
+      LIBRARY,
+      { type: "enqueue", id: 2 },
+      { type: "playAll", ids: [3, 4] },
+    ]);
+    expect(state.queue).toEqual([4]);
+  });
+
+  it("пустой альбом ничего не меняет", () => {
+    const before = run([LIBRARY, { type: "play", id: 1 }]);
+    const after = reduce(before, { type: "playAll", ids: [] }, deps);
+    expect(after).toEqual(before);
+  });
+
+  it("альбом из одного трека не оставляет мусора в очереди", () => {
+    const state = run([LIBRARY, { type: "playAll", ids: [2] }]);
+    expect(state.currentId).toBe(2);
+    expect(state.queue).toEqual([]);
+  });
 });
 
 describe("кнопка «назад»", () => {

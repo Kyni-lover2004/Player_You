@@ -25,6 +25,23 @@ CREATE TABLE IF NOT EXISTS tracks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tracks_added_at ON tracks(added_at DESC);
+
+CREATE TABLE IF NOT EXISTS albums (
+    id         INTEGER PRIMARY KEY,
+    title      TEXT    NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+-- Составной первичный ключ не даёт положить трек в один альбом дважды,
+-- но не мешает ему лежать сразу в нескольких альбомах.
+CREATE TABLE IF NOT EXISTS album_tracks (
+    album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+    track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    PRIMARY KEY (album_id, track_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_album_tracks_order ON album_tracks(album_id, position);
 ";
 
 /// Трек в библиотеке.
@@ -73,6 +90,11 @@ pub fn open(path: &Path) -> Result<Connection, String> {
     // WAL возвращает строку результата, поэтому идёт через query_row, а не execute.
     conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))
         .map_err(|e| format!("не удалось включить WAL: {e}"))?;
+
+    // В SQLite внешние ключи выключены по умолчанию: без этого ON DELETE
+    // CASCADE просто ничего не делает, и удалённый альбом оставит хвосты.
+    conn.execute_batch("PRAGMA foreign_keys = ON;")
+        .map_err(|e| format!("не удалось включить внешние ключи: {e}"))?;
 
     conn.execute_batch(SCHEMA)
         .map_err(|e| format!("не удалось создать схему: {e}"))?;
@@ -239,6 +261,134 @@ pub fn clear_edited(conn: &Connection, id: i64) -> Result<(), String> {
     Ok(())
 }
 
+/// Альбом — сборник, собранный руками из треков коллекции.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Album {
+    pub id: i64,
+    pub title: String,
+    pub created_at: i64,
+    pub track_count: i64,
+    /// Обложка первого трека с обложкой — лицо альбома.
+    pub cover_path: Option<String>,
+}
+
+/// Создаёт альбом и возвращает его идентификатор.
+pub fn create_album(conn: &Connection, title: &str) -> Result<i64, String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("у альбома должно быть название".into());
+    }
+
+    conn.execute(
+        "INSERT INTO albums (title, created_at) VALUES (?1, ?2)",
+        rusqlite::params![title, now_secs()],
+    )
+    .map_err(|e| format!("не удалось создать альбом: {e}"))?;
+
+    Ok(conn.last_insert_rowid())
+}
+
+/// Переименовывает альбом.
+pub fn rename_album(conn: &Connection, id: i64, title: &str) -> Result<(), String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("у альбома должно быть название".into());
+    }
+
+    conn.execute(
+        "UPDATE albums SET title = ?1 WHERE id = ?2",
+        rusqlite::params![title, id],
+    )
+    .map_err(|e| format!("не удалось переименовать альбом: {e}"))?;
+    Ok(())
+}
+
+/// Удаляет альбом. Треки при этом остаются в коллекции.
+pub fn delete_album(conn: &Connection, id: i64) -> Result<(), String> {
+    conn.execute("DELETE FROM albums WHERE id = ?1", [id])
+        .map_err(|e| format!("не удалось удалить альбом: {e}"))?;
+    Ok(())
+}
+
+/// Возвращает все альбомы, свежие сверху.
+pub fn all_albums(conn: &Connection) -> Result<Vec<Album>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT a.id, a.title, a.created_at,
+                    COUNT(at.track_id) AS track_count,
+                    (SELECT t.cover_path
+                       FROM album_tracks x
+                       JOIN tracks t ON t.id = x.track_id
+                      WHERE x.album_id = a.id AND t.cover_path IS NOT NULL
+                      ORDER BY x.position
+                      LIMIT 1) AS cover_path
+               FROM albums a
+               LEFT JOIN album_tracks at ON at.album_id = a.id
+              GROUP BY a.id
+              ORDER BY a.created_at DESC, a.id DESC",
+        )
+        .map_err(|e| format!("не удалось подготовить запрос альбомов: {e}"))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(Album {
+                id: row.get("id")?,
+                title: row.get("title")?,
+                created_at: row.get("created_at")?,
+                track_count: row.get("track_count")?,
+                cover_path: row.get("cover_path")?,
+            })
+        })
+        .map_err(|e| format!("не удалось прочитать альбомы: {e}"))?;
+
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| format!("не удалось разобрать альбом: {e}"))
+}
+
+/// Возвращает треки альбома в заданном порядке.
+pub fn album_tracks(conn: &Connection, album_id: i64) -> Result<Vec<Track>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.* FROM album_tracks at
+               JOIN tracks t ON t.id = at.track_id
+              WHERE at.album_id = ?1
+              ORDER BY at.position",
+        )
+        .map_err(|e| format!("не удалось подготовить запрос треков альбома: {e}"))?;
+
+    let rows = stmt
+        .query_map([album_id], row_to_track)
+        .map_err(|e| format!("не удалось прочитать треки альбома: {e}"))?;
+
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| format!("не удалось разобрать трек альбома: {e}"))
+}
+
+/// Добавляет трек в конец альбома. Повторное добавление ничего не меняет.
+pub fn add_to_album(conn: &Connection, album_id: i64, track_id: i64) -> Result<bool, String> {
+    let affected = conn
+        .execute(
+            "INSERT INTO album_tracks (album_id, track_id, position)
+             VALUES (?1, ?2,
+                     COALESCE((SELECT MAX(position) FROM album_tracks WHERE album_id = ?1), -1) + 1)
+             ON CONFLICT(album_id, track_id) DO NOTHING",
+            rusqlite::params![album_id, track_id],
+        )
+        .map_err(|e| format!("не удалось добавить трек в альбом: {e}"))?;
+
+    Ok(affected > 0)
+}
+
+/// Убирает трек из альбома. Сам трек остаётся в коллекции.
+pub fn remove_from_album(conn: &Connection, album_id: i64, track_id: i64) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM album_tracks WHERE album_id = ?1 AND track_id = ?2",
+        rusqlite::params![album_id, track_id],
+    )
+    .map_err(|e| format!("не удалось убрать трек из альбома: {e}"))?;
+    Ok(())
+}
+
 /// Сверяет базу с диском и помечает пропавшие файлы.
 ///
 /// Спека требует, чтобы удалённый мимо приложения файл не исчезал молча:
@@ -270,6 +420,7 @@ mod tests {
     /// База в памяти со схемой — для тестов.
     fn memory_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         conn.execute_batch(SCHEMA).unwrap();
         conn
     }
@@ -389,5 +540,133 @@ mod tests {
         assert!(!all_tracks(&conn).unwrap()[0].missing);
 
         std::fs::remove_file(&file).ok();
+    }
+    // ── Альбомы ──────────────────────────────────────
+
+    /// Кладёт в базу два трека и возвращает их идентификаторы.
+    fn two_tracks(conn: &Connection) -> (i64, i64) {
+        let first = upsert_track(conn, &sample("aaaaaaaaaaa", "/tmp/a.mp3")).unwrap();
+        let mut second_track = sample("bbbbbbbbbbb", "/tmp/b.mp3");
+        second_track.cover_path = Some("/tmp/b.jpg".into());
+        let second = upsert_track(conn, &second_track).unwrap();
+        (first, second)
+    }
+
+    #[test]
+    fn album_is_created_and_listed() {
+        let conn = memory_db();
+        let id = create_album(&conn, "Для машины").unwrap();
+
+        let albums = all_albums(&conn).unwrap();
+        assert_eq!(albums.len(), 1);
+        assert_eq!(albums[0].id, id);
+        assert_eq!(albums[0].title, "Для машины");
+        assert_eq!(albums[0].track_count, 0);
+    }
+
+    #[test]
+    fn album_without_title_is_rejected() {
+        let conn = memory_db();
+        assert!(create_album(&conn, "   ").is_err());
+        assert!(rename_album(&conn, 1, "").is_err());
+    }
+
+    #[test]
+    fn tracks_keep_the_order_they_were_added() {
+        let conn = memory_db();
+        let (first, second) = two_tracks(&conn);
+        let album = create_album(&conn, "Зима").unwrap();
+
+        add_to_album(&conn, album, second).unwrap();
+        add_to_album(&conn, album, first).unwrap();
+
+        let ids: Vec<i64> = album_tracks(&conn, album).unwrap().iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec![second, first], "порядок добавления не сохранился");
+    }
+
+    #[test]
+    fn adding_the_same_track_twice_changes_nothing() {
+        let conn = memory_db();
+        let (first, _) = two_tracks(&conn);
+        let album = create_album(&conn, "Зима").unwrap();
+
+        assert!(add_to_album(&conn, album, first).unwrap());
+        assert!(!add_to_album(&conn, album, first).unwrap(), "трек добавился повторно");
+        assert_eq!(album_tracks(&conn, album).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn one_track_can_live_in_several_albums() {
+        let conn = memory_db();
+        let (first, _) = two_tracks(&conn);
+        let car = create_album(&conn, "Для машины").unwrap();
+        let winter = create_album(&conn, "Зима").unwrap();
+
+        add_to_album(&conn, car, first).unwrap();
+        add_to_album(&conn, winter, first).unwrap();
+
+        assert_eq!(album_tracks(&conn, car).unwrap().len(), 1);
+        assert_eq!(album_tracks(&conn, winter).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn removing_from_album_keeps_the_track_in_library() {
+        let conn = memory_db();
+        let (first, _) = two_tracks(&conn);
+        let album = create_album(&conn, "Зима").unwrap();
+        add_to_album(&conn, album, first).unwrap();
+
+        remove_from_album(&conn, album, first).unwrap();
+
+        assert!(album_tracks(&conn, album).unwrap().is_empty());
+        assert_eq!(all_tracks(&conn).unwrap().len(), 2, "трек пропал из коллекции");
+    }
+
+    #[test]
+    fn deleting_album_keeps_tracks_but_clears_links() {
+        let conn = memory_db();
+        let (first, second) = two_tracks(&conn);
+        let album = create_album(&conn, "Зима").unwrap();
+        add_to_album(&conn, album, first).unwrap();
+        add_to_album(&conn, album, second).unwrap();
+
+        delete_album(&conn, album).unwrap();
+
+        assert!(all_albums(&conn).unwrap().is_empty());
+        assert_eq!(all_tracks(&conn).unwrap().len(), 2, "удаление альбома унесло треки");
+
+        // Каскад: связи должны исчезнуть вместе с альбомом.
+        let leftovers: i64 = conn
+            .query_row("SELECT COUNT(*) FROM album_tracks", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(leftovers, 0, "связи остались висеть после удаления альбома");
+    }
+
+    #[test]
+    fn deleting_track_removes_it_from_albums() {
+        let conn = memory_db();
+        let (first, _) = two_tracks(&conn);
+        let album = create_album(&conn, "Зима").unwrap();
+        add_to_album(&conn, album, first).unwrap();
+
+        conn.execute("DELETE FROM tracks WHERE id = ?1", [first]).unwrap();
+
+        assert!(album_tracks(&conn, album).unwrap().is_empty());
+        assert_eq!(all_albums(&conn).unwrap()[0].track_count, 0);
+    }
+
+    #[test]
+    fn album_cover_comes_from_first_track_that_has_one() {
+        let conn = memory_db();
+        let (first, second) = two_tracks(&conn);
+        let album = create_album(&conn, "Зима").unwrap();
+
+        // Первым идёт трек без обложки — лицом альбома должен стать второй.
+        add_to_album(&conn, album, first).unwrap();
+        add_to_album(&conn, album, second).unwrap();
+
+        let albums = all_albums(&conn).unwrap();
+        assert_eq!(albums[0].cover_path.as_deref(), Some("/tmp/b.jpg"));
+        assert_eq!(albums[0].track_count, 2);
     }
 }
