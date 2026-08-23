@@ -131,35 +131,107 @@ impl Queue {
     }
 }
 
+/// Домашний каталог пользователя.
+///
+/// На Windows переменной HOME обычно нет — там USERPROFILE.
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+/// Каталоги, где внешние инструменты лежат чаще всего.
+///
+/// На macOS этот список принципиален: приложение, запущенное из Finder, не
+/// наследует PATH из шелла, и поиск только по нему провалился бы молча.
+/// На Windows PATH наследуется, поэтому список там служит лишь подстраховкой
+/// для установок мимо неё.
+fn well_known_dirs() -> Vec<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut dirs = Vec::new();
+
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            dirs.push(
+                PathBuf::from(local)
+                    .join("Microsoft")
+                    .join("WinGet")
+                    .join("Links"),
+            );
+        }
+        if let Some(home) = home_dir() {
+            dirs.push(home.join("scoop").join("shims"));
+        }
+        dirs.push(PathBuf::from(r"C:\ProgramData\chocolatey\bin"));
+
+        dirs
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+            .iter()
+            .map(PathBuf::from)
+            .collect()
+    }
+}
+
+/// Подсказка, как поставить недостающий инструмент.
+fn install_hint(name: &str) -> String {
+    if cfg!(target_os = "windows") {
+        format!("{name} не найден. Установи его: winget install {name}")
+    } else {
+        format!("{name} не найден. Установи его: brew install {name}")
+    }
+}
+
 /// Ищет исполняемый файл среди каталогов переменной PATH.
-fn which_from_path(name: &str) -> Option<PathBuf> {
+fn which_from_path(file_name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
+        .map(|dir| dir.join(file_name))
         .find(|candidate| candidate.is_file())
 }
 
 /// Находит внешний бинарь (yt-dlp, ffmpeg) по известным путям, затем по PATH.
-///
-/// Порядок именно такой, потому что GUI-приложения на macOS не наследуют PATH
-/// из шелла: в собранном .app поиск только по PATH молча провалится.
 pub fn resolve_binary(name: &str) -> Result<PathBuf, String> {
-    const WELL_KNOWN: [&str; 4] = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"];
+    // На Windows исполняемый файл называется yt-dlp.exe. Без расширения
+    // проверка существования не совпадёт никогда, даже если инструмент стоит.
+    let file_name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
 
-    for dir in WELL_KNOWN {
-        let candidate = PathBuf::from(dir).join(name);
+    for dir in well_known_dirs() {
+        let candidate = dir.join(&file_name);
         if candidate.is_file() {
             return Ok(candidate);
         }
     }
 
-    which_from_path(name).ok_or_else(|| format!("{name} не найден. Установи его: brew install {name}"))
+    which_from_path(&file_name).ok_or_else(|| install_hint(name))
+}
+
+/// Создаёт команду, не показывающую окно консоли.
+///
+/// Само приложение консоль не открывает — за это отвечает windows_subsystem
+/// в main.rs. Но каждый запуск подпроцесса вылезает отдельным чёрным окном,
+/// и на плейлисте из полусотни треков это полсотни вспышек.
+fn quiet_command(program: &Path) -> Command {
+    #[allow(unused_mut)]
+    let mut command = Command::new(program);
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    command
 }
 
 /// Возвращает каталог для скачанных треков (~/Music/Omen), создавая его при необходимости.
 pub fn output_dir() -> Result<PathBuf, String> {
-    let home = std::env::var_os("HOME").ok_or("не удалось определить домашний каталог")?;
-    let dir = PathBuf::from(home).join("Music").join("Omen");
+    let home = home_dir().ok_or("не удалось определить домашний каталог")?;
+    let dir = home.join("Music").join("Omen");
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("не удалось создать {}: {e}", dir.display()))?;
     Ok(dir)
@@ -190,7 +262,7 @@ crop={size}:{size},boxblur=24:3[bg];\
 [bg][fg]overlay=(W-w)/2:(H-h)/2"
     );
 
-    let output = Command::new(ffmpeg)
+    let output = quiet_command(ffmpeg)
         .arg("-y")
         .args(["-loglevel", "error"])
         .arg("-i")
@@ -275,7 +347,7 @@ pub struct PlaylistInfo {
 pub fn probe_playlist(url: &str) -> Result<PlaylistInfo, String> {
     let ytdlp = resolve_binary("yt-dlp")?;
 
-    let output = Command::new(&ytdlp)
+    let output = quiet_command(&ytdlp)
         .arg("--flat-playlist")
         .arg("--skip-download")
         .args(["--print", "playlist_title"])
@@ -346,7 +418,7 @@ pub fn download(
     // Идентификатор видео в имени файла — ключ дедупликации из спеки.
     let template = dir.join("%(title)s [%(id)s].%(ext)s");
 
-    let mut child = Command::new(&ytdlp)
+    let mut child = quiet_command(&ytdlp)
         .arg("--extract-audio")
         .args(["--audio-format", "mp3"])
         .args(["--audio-quality", "320K"])
