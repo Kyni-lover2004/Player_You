@@ -170,6 +170,56 @@ function Ring({
   );
 }
 
+/**
+ * Значок громкости.
+ *
+ * Нарисован, а не взят из эмодзи: системные эмодзи цветные и трёхмерные,
+ * а рядом стоят однотонные типографские знаки — вместе они выглядят как
+ * два разных интерфейса. Этот наследует цвет темы через currentColor.
+ *
+ * Дуг столько же, сколько уровня: тише — меньше, при заглушении вместо
+ * них крестик.
+ */
+function VolumeIcon({ level, muted }: { level: number; muted: boolean }) {
+  const silent = muted || level === 0;
+
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M2.6 6.1h2.5L8.5 3.2a.5.5 0 0 1 .8.4v8.8a.5.5 0 0 1-.8.4L5.1 9.9H2.6a.6.6 0 0 1-.6-.6V6.7a.6.6 0 0 1 .6-.6Z"
+        fill="currentColor"
+      />
+
+      {!silent && (
+        <path
+          d="M11.2 6.3a2.4 2.4 0 0 1 0 3.4"
+          stroke="currentColor"
+          strokeWidth="1.3"
+          strokeLinecap="round"
+        />
+      )}
+
+      {!silent && level >= 0.5 && (
+        <path
+          d="M13.2 4.5a5 5 0 0 1 0 7"
+          stroke="currentColor"
+          strokeWidth="1.3"
+          strokeLinecap="round"
+        />
+      )}
+
+      {silent && (
+        <path
+          d="m11.3 6.3 3.2 3.4m0-3.4-3.2 3.4"
+          stroke="currentColor"
+          strokeWidth="1.3"
+          strokeLinecap="round"
+        />
+      )}
+    </svg>
+  );
+}
+
 function App() {
   const [url, setUrl] = useState("");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
@@ -1229,7 +1279,7 @@ function App() {
                 onClick={player.controls.toggleMute}
                 title={player.muted ? "Включить звук" : "Заглушить"}
               >
-                {player.muted || player.volume === 0 ? "🔇" : player.volume < 0.5 ? "🔈" : "🔊"}
+                <VolumeIcon level={player.volume} muted={player.muted} />
               </button>
 
               <input

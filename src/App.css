@@ -976,8 +976,13 @@ code.job-error {
 .volume-icon {
   width: 28px;
   height: 28px;
-  font-size: 12px;
+  display: grid;
+  place-items: center;
+  /* Значок нарисован, поэтому берёт цвет от кнопки, а не от шрифта. */
+  color: var(--muted);
 }
+
+.volume-icon:hover { color: var(--text); }
 
 .volume {
   width: 74px;
