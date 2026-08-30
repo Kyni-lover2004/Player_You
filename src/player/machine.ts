@@ -261,13 +261,17 @@ function setLibrary(state: PlayerState, ids: number[], deps: Deps): PlayerState 
   }
 
   const playOrder = buildPlayOrder(ids, state.shuffle, state.currentId, deps);
+  const found = state.currentId === null ? -1 : playOrder.indexOf(state.currentId);
 
   return {
     ...state,
     libraryIds: ids,
     order: ids,
     playOrder,
-    cursor: state.currentId === null ? -1 : playOrder.indexOf(state.currentId),
+    // Текущего трека может не быть в новом списке — его только что удалили,
+    // а он доигрывает. Курсор в этом случае уже стоит там, откуда продолжать,
+    // и сбрасывать его значило бы отправить плеер в начало коллекции.
+    cursor: state.currentId === null ? -1 : found === -1 ? state.cursor : found,
     queue,
   };
 }

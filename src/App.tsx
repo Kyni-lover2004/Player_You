@@ -228,6 +228,7 @@ function App() {
   const [probing, setProbing] = useState(false);
   const [pending, setPending] = useState<{ link: string; info: PlaylistInfo } | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
 
@@ -492,6 +493,26 @@ function App() {
     if (theme.id === id) chooseTheme(THEMES[0]);
   }
 
+  /**
+   * Полностью удаляет трек: запись, файл и обложку.
+   *
+   * Сначала машина состояний узнаёт об удалении, потом обновляется список.
+   * Обратный порядок сбил бы правило «удалённый доигрывает, дальше сосед».
+   */
+  async function handleDelete(id: number) {
+    setConfirmDelete(null);
+    player.controls.remove(id);
+    try {
+      setTracks(await invoke<Track[]>("delete_track", { id }));
+      await refreshAlbums();
+      if (openAlbum) {
+        setAlbumTracks(await invoke<Track[]>("album_tracks", { albumId: openAlbum.id }));
+      }
+    } catch (error) {
+      setStatus({ kind: "error", message: String(error) });
+    }
+  }
+
   /** Открывает правку трека, заполняя форму текущими значениями. */
   function startEdit(track: Track) {
     setEditingId(track.id);
@@ -558,6 +579,7 @@ function App() {
     help: () => setHelpOpen((open) => !open),
     escape: () => {
       if (helpOpen) return setHelpOpen(false);
+      if (confirmDelete !== null) return setConfirmDelete(null);
       if (pending) return setPending(null);
       if (editingId !== null) return setEditingId(null);
       if (search) return setSearch("");
@@ -642,7 +664,24 @@ function App() {
               )}
 
               {visible.map((track) =>
-                editingId === track.id ? (
+                confirmDelete === track.id ? (
+                  <div key={track.id} className="track confirming">
+                    <Cover track={track} />
+                    <div className="confirm-body">
+                      <span className="confirm-text">
+                        Удалить «{track.title}»? Файл уйдёт в Корзину.
+                      </span>
+                      <div className="edit-actions">
+                        <button className="mini danger" onClick={() => handleDelete(track.id)}>
+                          Удалить
+                        </button>
+                        <button className="mini" onClick={() => setConfirmDelete(null)}>
+                          Отмена
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : editingId === track.id ? (
                   <div key={track.id} className="track editing">
                     <Cover track={track} />
                     <div className="edit-form">
@@ -724,6 +763,13 @@ function App() {
                       title="Править название"
                     >
                       ✎
+                    </button>
+                    <button
+                      className="track-act track-act-danger"
+                      onClick={() => setConfirmDelete(track.id)}
+                      title="Удалить трек"
+                    >
+                      ✕
                     </button>
                   </div>
                 )

@@ -321,6 +321,16 @@ describe("удаление трека", () => {
     expect(next.currentId).toBe(4);
   });
 
+  it("после удаления обновление библиотеки не отбрасывает плеер в начало", () => {
+    // Удаление в приложении всегда идёт в паре с перечитыванием библиотеки,
+    // поэтому правило «дальше идёт сосед» проверяется именно этой парой.
+    let state = run([LIBRARY, { type: "play", id: 2 }, { type: "remove", id: 2 }]);
+    state = reduce(state, { type: "library", ids: [1, 3, 4] }, deps);
+
+    expect(state.currentId).toBe(2);
+    expect(reduce(state, { type: "next", reason: "ended" }, deps).currentId).toBe(3);
+  });
+
   it("удалённый трек исчезает из очереди", () => {
     const state = run([LIBRARY, { type: "enqueue", id: 4 }, { type: "remove", id: 4 }]);
     expect(state.queue).toEqual([]);

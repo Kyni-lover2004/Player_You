@@ -339,6 +339,48 @@ pub struct PlaylistInfo {
     pub ids: Vec<String>,
 }
 
+/// Убирает файл с глаз: в Корзину, если она есть, иначе удаляет.
+///
+/// Корзина — обычная папка, поэтому перемещение туда не требует ни особых
+/// разрешений, ни системных диалогов. Зато промах можно отменить руками,
+/// а безвозвратное удаление отменить нельзя ничем.
+///
+/// Отсутствующий файл ошибкой не считается: его могли убрать и мимо
+/// приложения, и повод отказывать пользователю в удалении записи тут слабый.
+pub fn discard_file(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let Some(trash) = home_dir().map(|home| home.join(".Trash")).filter(|dir| dir.is_dir()) else {
+        return std::fs::remove_file(path)
+            .map_err(|e| format!("не удалось удалить {}: {e}", path.display()));
+    };
+
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("странный путь: {}", path.display()))?;
+
+    let mut target = trash.join(name);
+
+    // В Корзине уже может лежать одноимённый файл — тогда добавляем счётчик,
+    // иначе переименование затрёт то, что человек выбросил раньше.
+    let mut attempt = 1;
+    while target.exists() {
+        let stem = path.file_stem().unwrap_or(name).to_string_lossy().to_string();
+        let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+        target = trash.join(format!("{stem} {attempt}{ext}"));
+        attempt += 1;
+    }
+
+    // Переименование работает только внутри одного тома. Музыка и Корзина
+    // лежат в домашней папке, но на всякий случай откатываемся к удалению.
+    std::fs::rename(path, &target).or_else(|_| {
+        std::fs::remove_file(path)
+            .map_err(|e| format!("не удалось убрать {}: {e}", path.display()))
+    })
+}
+
 /// Заглядывает в плейлист, ничего не скачивая.
 ///
 /// `--flat-playlist` не открывает страницы отдельных видео, поэтому даже
@@ -592,5 +634,23 @@ mod tests {
         let info = split_playlist_output(&[]);
         assert!(info.ids.is_empty());
         assert!(info.title.is_none());
+    }
+    #[test]
+    fn discarding_a_missing_file_is_not_an_error() {
+        assert!(discard_file(Path::new("/tmp/omen-такого-файла-нет.mp3")).is_ok());
+    }
+
+    #[test]
+    fn discarded_file_leaves_its_place() {
+        let file = std::env::temp_dir().join("omen-тест-удаления.mp3");
+        std::fs::write(&file, b"x").unwrap();
+
+        discard_file(&file).unwrap();
+        assert!(!file.exists(), "файл остался на месте");
+
+        // Прибираем за собой, если он уехал в Корзину.
+        if let Some(home) = home_dir() {
+            let _ = std::fs::remove_file(home.join(".Trash").join("omen-тест-удаления.mp3"));
+        }
     }
 }

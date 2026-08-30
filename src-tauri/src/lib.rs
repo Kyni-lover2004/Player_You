@@ -191,6 +191,30 @@ fn library(state: tauri::State<'_, Library>) -> Result<Vec<db::Track>, String> {
     db::all_tracks(&conn)
 }
 
+/// Полностью удаляет трек: запись из базы, файл и обложку.
+///
+/// Сначала исчезает запись, потом файлы. Обратный порядок оставлял бы окно,
+/// в котором файла уже нет, а трек в списке ещё есть.
+///
+/// Неудача с файлами не отменяет удаление: для человека трек уже ушёл, и
+/// возвращать его в список из-за не убравшейся обложки было бы враньём.
+#[tauri::command]
+fn delete_track(app: tauri::AppHandle, id: i64) -> Result<Vec<db::Track>, String> {
+    let state = app.state::<Library>();
+    let conn = state.0.lock().map_err(|_| "библиотека занята")?;
+
+    let track = db::find_by_id(&conn, id)?.ok_or("трек не найден")?;
+    db::delete_track(&conn, id)?;
+
+    for path in [Some(track.file_path), track.cover_path].into_iter().flatten() {
+        if let Err(reason) = downloads::discard_file(std::path::Path::new(&path)) {
+            eprintln!("не удалось убрать файл: {reason}");
+        }
+    }
+
+    db::all_tracks(&conn)
+}
+
 /// Приводит поле формы к значению для базы: пустая строка означает «не задано».
 fn normalize_field(value: Option<String>) -> Option<String> {
     value
@@ -334,6 +358,7 @@ pub fn run() {
             downloads_state,
             clear_finished_downloads,
             library,
+            delete_track,
             save_track_title,
             reset_track_title,
             albums,

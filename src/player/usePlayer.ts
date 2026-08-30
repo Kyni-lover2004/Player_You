@@ -148,6 +148,9 @@ export function usePlayer(tracks: PlayableTrack[], sourceFor: (id: number) => st
     dequeue: (index: number) => dispatchQuiet({ type: "dequeue", index }),
     clearQueue: () => dispatchQuiet({ type: "clearQueue" }),
 
+    /** Убирает трек отовсюду. Играющий при этом доигрывает до конца. */
+    remove: (id: number) => dispatchQuiet({ type: "remove", id }),
+
     /**
      * Перемотка. Позицию задаём напрямую аудиоэлементу: он сам сохраняет
      * паузу, если был на паузе, и не начинает играть от одного лишь seek.

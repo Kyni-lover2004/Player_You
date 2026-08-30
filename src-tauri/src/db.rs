@@ -389,6 +389,16 @@ pub fn remove_from_album(conn: &Connection, album_id: i64, track_id: i64) -> Res
     Ok(())
 }
 
+/// Удаляет трек из библиотеки.
+///
+/// Связи с альбомами уходят каскадом, поэтому чистить их отдельно не нужно.
+/// Файлы на диске эта функция не трогает: она про базу.
+pub fn delete_track(conn: &Connection, id: i64) -> Result<(), String> {
+    conn.execute("DELETE FROM tracks WHERE id = ?1", [id])
+        .map_err(|e| format!("не удалось удалить трек: {e}"))?;
+    Ok(())
+}
+
 /// Сверяет базу с диском и помечает пропавшие файлы.
 ///
 /// Спека требует, чтобы удалённый мимо приложения файл не исчезал молча:
@@ -515,6 +525,40 @@ mod tests {
     fn find_by_id_returns_none_for_missing_row() {
         let conn = memory_db();
         assert!(find_by_id(&conn, 999).unwrap().is_none());
+    }
+
+    #[test]
+    fn deleted_track_disappears_from_library() {
+        let conn = memory_db();
+        let (first, second) = two_tracks(&conn);
+
+        delete_track(&conn, first).unwrap();
+
+        assert!(find_by_id(&conn, first).unwrap().is_none());
+        assert!(find_by_id(&conn, second).unwrap().is_some(), "удалило лишнее");
+    }
+
+    #[test]
+    fn deleted_track_leaves_albums_clean() {
+        let conn = memory_db();
+        let (first, second) = two_tracks(&conn);
+        let album = create_album(&conn, "Зима").unwrap();
+        add_to_album(&conn, album, first).unwrap();
+        add_to_album(&conn, album, second).unwrap();
+
+        delete_track(&conn, first).unwrap();
+
+        let left: Vec<i64> = album_tracks(&conn, album).unwrap().iter().map(|t| t.id).collect();
+        assert_eq!(left, vec![second], "трек остался висеть в альбоме");
+        assert_eq!(all_albums(&conn).unwrap()[0].track_count, 1);
+    }
+
+    #[test]
+    fn deleting_the_same_track_twice_is_harmless() {
+        let conn = memory_db();
+        let (first, _) = two_tracks(&conn);
+        delete_track(&conn, first).unwrap();
+        assert!(delete_track(&conn, first).is_ok());
     }
 
     #[test]
