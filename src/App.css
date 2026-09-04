@@ -841,7 +841,8 @@ button.album-title:hover { background: var(--surface); border-color: var(--borde
 .job-why:hover { color: var(--text); }
 
 .job-bar {
-  height: 3px;
+  flex: 1;
+  height: 4px;
   border-radius: 2px;
   background: var(--border);
   overflow: hidden;
@@ -854,8 +855,10 @@ button.album-title:hover { background: var(--surface); border-color: var(--borde
   transition: width 0.25s ease;
 }
 
-/* Перекодирование идёт без прогресса — ffmpeg о нём не сообщает,
-   поэтому полоса заполнена и переливается, а не врёт процентами. */
+/* Ожидание очереди и перекодирование одинаково безмолвны: у первого прогресса
+   ещё нет, у второго его не сообщает ffmpeg. Полоса переливается, но процентов
+   не показывает — выдумывать их было бы враньём. */
+.job-waiting .job-bar span,
 .job-converting .job-bar span {
   background: linear-gradient(90deg, var(--border), var(--accent), var(--border));
   background-size: 200% 100%;

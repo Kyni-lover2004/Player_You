@@ -420,6 +420,9 @@ pub fn download(
         .args(["--print", "after_move:filepath"])
         .arg("--no-simulate")
         .arg("--newline")
+        // --print включает у yt-dlp тихий режим и подавляет прогресс.
+        // Без этого ключа проценты не приходят вовсе, и полоса стоит на нуле.
+        .arg("--progress")
         .args(["--progress-template", &format!("{PROGRESS_MARK}%(progress._percent_str)s")])
         .arg("--no-warnings")
         .arg(url)

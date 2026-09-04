@@ -1035,39 +1035,38 @@ function App() {
             <div className="jobs">
               {jobs.map((job) => (
                 <div key={job.id} className={`job job-${job.status}`}>
-                  <div className="job-row">
-                    <span className="job-text">
-                      {job.status === "error"
-                        ? "Не вышло"
-                        : job.status === "done"
-                          ? job.title ?? "Готово"
-                          : job.status === "converting"
-                            ? "Перекодирую"
-                            : job.status === "waiting"
-                              ? "Жду очереди"
-                              : "Качаю"}
-                    </span>
-                    <span className="job-side">
-                      {job.status === "downloading" && `${Math.round(job.percent)}%`}
-                      {job.status === "done" && "✓"}
-                      {job.status === "error" && (
-                        <button
-                          className="job-why"
-                          onClick={() => setOpenError(openError === job.id ? null : job.id)}
-                        >
-                          почему
-                        </button>
+                  {/* Пока трек качается, слов не нужно: полоса и процент
+                      говорят всё сами. Название появляется, когда становится
+                      известно, то есть в самом конце. */}
+                  {job.status === "done" || job.status === "error" ? (
+                    <div className="job-row">
+                      <span className="job-text">
+                        {job.status === "error" ? "Не вышло" : job.title ?? "Готово"}
+                      </span>
+                      <span className="job-side">
+                        {job.status === "done" && "✓"}
+                        {job.status === "error" && (
+                          <button
+                            className="job-why"
+                            onClick={() => setOpenError(openError === job.id ? null : job.id)}
+                          >
+                            почему
+                          </button>
+                        )}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="job-row">
+                      <div className="job-bar">
+                        <span
+                          style={{
+                            width: job.status === "downloading" ? `${job.percent}%` : "100%",
+                          }}
+                        />
+                      </div>
+                      {job.status === "downloading" && (
+                        <span className="job-side">{Math.round(job.percent)}%</span>
                       )}
-                    </span>
-                  </div>
-
-                  {(job.status === "downloading" || job.status === "converting") && (
-                    <div className="job-bar">
-                      <span
-                        style={{
-                          width: job.status === "converting" ? "100%" : `${job.percent}%`,
-                        }}
-                      />
                     </div>
                   )}
 
