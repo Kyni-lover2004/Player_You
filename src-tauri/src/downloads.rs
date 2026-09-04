@@ -331,14 +331,6 @@ pub fn explain(stderr: &str) -> String {
     format!("{hint}\n\n{}", stderr.trim())
 }
 
-/// Что удалось узнать о плейлисте, не скачивая его.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PlaylistInfo {
-    pub title: Option<String>,
-    /// Идентификаторы видео в порядке плейлиста.
-    pub ids: Vec<String>,
-}
-
 /// Убирает файл с глаз: в Корзину, если она есть, иначе удаляет.
 ///
 /// Корзина — обычная папка, поэтому перемещение туда не требует ни особых
@@ -379,58 +371,6 @@ pub fn discard_file(path: &Path) -> Result<(), String> {
         std::fs::remove_file(path)
             .map_err(|e| format!("не удалось убрать {}: {e}", path.display()))
     })
-}
-
-/// Заглядывает в плейлист, ничего не скачивая.
-///
-/// `--flat-playlist` не открывает страницы отдельных видео, поэтому даже
-/// длинный список отвечает быстро. Два `--print` дают по две строки на
-/// запись: сначала название плейлиста, потом идентификатор.
-pub fn probe_playlist(url: &str) -> Result<PlaylistInfo, String> {
-    let ytdlp = resolve_binary("yt-dlp")?;
-
-    let output = quiet_command(&ytdlp)
-        .arg("--flat-playlist")
-        .arg("--skip-download")
-        .args(["--print", "playlist_title"])
-        .args(["--print", "id"])
-        .arg("--quiet")
-        .arg("--no-warnings")
-        .arg(url)
-        .output()
-        .map_err(|e| format!("не удалось запустить yt-dlp: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(explain(stderr.trim()));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let lines: Vec<&str> = stdout.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
-
-    Ok(split_playlist_output(&lines))
-}
-
-/// Раскладывает чередующиеся строки «название, идентификатор» по местам.
-///
-/// Вынесено отдельно, потому что это единственная часть разбора, которую
-/// можно проверить без сети.
-fn split_playlist_output(lines: &[&str]) -> PlaylistInfo {
-    let mut title = None;
-    let mut ids = Vec::new();
-
-    for (index, line) in lines.iter().enumerate() {
-        if index % 2 == 0 {
-            // Название повторяется для каждой записи — берём первое непустое.
-            if title.is_none() && *line != "NA" {
-                title = Some((*line).to_string());
-            }
-        } else {
-            ids.push((*line).to_string());
-        }
-    }
-
-    PlaylistInfo { title, ids }
 }
 
 /// Скачивает аудио одного видео, сообщая о прогрессе.
@@ -606,35 +546,9 @@ mod tests {
         let explained = explain("ERROR: unable to extract player response");
         assert!(explained.contains("brew upgrade yt-dlp"));
     }
-    #[test]
-    fn playlist_output_splits_into_title_and_ids() {
-        let lines = ["Мой список", "aaa", "Мой список", "bbb", "Мой список", "ccc"];
-        let info = split_playlist_output(&lines);
-        assert_eq!(info.title.as_deref(), Some("Мой список"));
-        assert_eq!(info.ids, vec!["aaa", "bbb", "ccc"]);
-    }
 
-    #[test]
-    fn playlist_without_title_still_gives_ids() {
-        // Плейлисты без названия yt-dlp помечает как NA.
-        let lines = ["NA", "aaa", "NA", "bbb"];
-        let info = split_playlist_output(&lines);
-        assert_eq!(info.title, None);
-        assert_eq!(info.ids, vec!["aaa", "bbb"]);
-    }
 
-    #[test]
-    fn single_video_gives_one_id() {
-        let info = split_playlist_output(&["NA", "aaa"]);
-        assert_eq!(info.ids, vec!["aaa"]);
-    }
 
-    #[test]
-    fn empty_output_is_not_a_crash() {
-        let info = split_playlist_output(&[]);
-        assert!(info.ids.is_empty());
-        assert!(info.title.is_none());
-    }
     #[test]
     fn discarding_a_missing_file_is_not_an_error() {
         assert!(discard_file(Path::new("/tmp/omen-такого-файла-нет.mp3")).is_ok());

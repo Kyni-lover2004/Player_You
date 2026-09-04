@@ -120,33 +120,6 @@ fn enqueue_download(app: tauri::AppHandle, url: String) -> Result<Vec<downloads:
     Ok(snapshot)
 }
 
-/// Заглядывает в плейлист по ссылке, ничего не скачивая.
-#[tauri::command]
-async fn probe_playlist(url: String) -> Result<downloads::PlaylistInfo, String> {
-    tauri::async_runtime::spawn_blocking(move || downloads::probe_playlist(&url))
-        .await
-        .map_err(|e| format!("проверка плейлиста прервалась: {e}"))?
-}
-
-/// Ставит в очередь сразу несколько ссылок.
-///
-/// Плейлист разбирается на отдельные задания, а не отдаётся yt-dlp одной
-/// командой: так у каждого трека свой прогресс, а падение одного видео
-/// не уносит с собой остальные.
-#[tauri::command]
-fn enqueue_many(app: tauri::AppHandle, urls: Vec<String>) -> Result<Vec<downloads::Job>, String> {
-    {
-        let queue = app.state::<downloads::Queue>();
-        for url in urls {
-            queue.push(url)?;
-        }
-    }
-
-    let snapshot = app.state::<downloads::Queue>().snapshot();
-    run_worker(app.clone());
-    Ok(snapshot)
-}
-
 /// Текущее состояние очереди загрузок.
 #[tauri::command]
 fn downloads_state(state: tauri::State<'_, downloads::Queue>) -> Vec<downloads::Job> {
@@ -353,8 +326,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             enqueue_download,
-            enqueue_many,
-            probe_playlist,
             downloads_state,
             clear_finished_downloads,
             library,
