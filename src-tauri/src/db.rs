@@ -21,7 +21,9 @@ CREATE TABLE IF NOT EXISTS tracks (
     duration_secs  REAL,
     added_at       INTEGER NOT NULL,
     missing        INTEGER NOT NULL DEFAULT 0,
-    edited         INTEGER NOT NULL DEFAULT 0
+    edited         INTEGER NOT NULL DEFAULT 0,
+    cuts           TEXT    NOT NULL DEFAULT '[]',
+    original_path  TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_tracks_added_at ON tracks(added_at DESC);
@@ -64,6 +66,20 @@ pub struct Track {
     pub missing: bool,
     /// Название правили руками — авточистка такую строку больше не трогает.
     pub edited: bool,
+    /// Вырезанные отрезки в секундах, парами «с» и «по».
+    pub cuts: Vec<Cut>,
+    /// Нетронутый исходник. Появляется, когда трек порезали впервые.
+    ///
+    /// Резать всегда нужно из него: иначе вторая правка кромсала бы результат
+    /// первой, накапливая и потерю качества, и смещение границ.
+    pub original_path: Option<String>,
+}
+
+/// Отрезок, который нужно убрать из трека.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Cut {
+    pub start: f64,
+    pub end: f64,
 }
 
 /// Данные для добавления трека: всё то же, но без идентификатора и служебных полей.
@@ -100,6 +116,8 @@ pub fn open(path: &Path) -> Result<Connection, String> {
         .map_err(|e| format!("не удалось создать схему: {e}"))?;
 
     ensure_column(&conn, "tracks", "edited", "INTEGER NOT NULL DEFAULT 0")?;
+    ensure_column(&conn, "tracks", "cuts", "TEXT NOT NULL DEFAULT '[]'")?;
+    ensure_column(&conn, "tracks", "original_path", "TEXT")?;
 
     Ok(conn)
 }
@@ -149,6 +167,8 @@ fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<Track> {
         added_at: row.get("added_at")?,
         missing: row.get::<_, i64>("missing")? != 0,
         edited: row.get::<_, i64>("edited")? != 0,
+        cuts: serde_json::from_str(&row.get::<_, String>("cuts")?).unwrap_or_default(),
+        original_path: row.get("original_path")?,
     })
 }
 
@@ -389,6 +409,67 @@ pub fn remove_from_album(conn: &Connection, album_id: i64, track_id: i64) -> Res
     Ok(())
 }
 
+/// Приводит список вырезок в порядок: сортирует, склеивает пересечения,
+/// выбрасывает пустые.
+///
+/// Без этого две пересекающиеся метки дали бы ffmpeg противоречивые
+/// указания, а результат зависел бы от порядка нажатий.
+pub fn normalize_cuts(cuts: &[Cut]) -> Vec<Cut> {
+    let mut sane: Vec<Cut> = cuts
+        .iter()
+        .map(|cut| Cut {
+            start: cut.start.max(0.0).min(cut.end),
+            end: cut.end.max(cut.start.max(0.0)),
+        })
+        .filter(|cut| cut.end - cut.start > 0.05)
+        .collect();
+
+    sane.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut merged: Vec<Cut> = Vec::new();
+    for cut in sane {
+        match merged.last_mut() {
+            Some(last) if cut.start <= last.end => last.end = last.end.max(cut.end),
+            _ => merged.push(cut),
+        }
+    }
+
+    merged
+}
+
+/// Сохраняет список вырезок трека.
+pub fn set_cuts(conn: &Connection, id: i64, cuts: &[Cut]) -> Result<(), String> {
+    let json = serde_json::to_string(&normalize_cuts(cuts))
+        .map_err(|e| format!("не удалось записать вырезки: {e}"))?;
+
+    conn.execute(
+        "UPDATE tracks SET cuts = ?1 WHERE id = ?2",
+        rusqlite::params![json, id],
+    )
+    .map_err(|e| format!("не удалось сохранить вырезки: {e}"))?;
+    Ok(())
+}
+
+/// Запоминает путь к нетронутому исходнику. Повторный вызов ничего не меняет.
+pub fn remember_original(conn: &Connection, id: i64, path: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE tracks SET original_path = ?1 WHERE id = ?2 AND original_path IS NULL",
+        rusqlite::params![path, id],
+    )
+    .map_err(|e| format!("не удалось запомнить исходник: {e}"))?;
+    Ok(())
+}
+
+/// Обновляет длительность после резки.
+pub fn set_duration(conn: &Connection, id: i64, seconds: f64) -> Result<(), String> {
+    conn.execute(
+        "UPDATE tracks SET duration_secs = ?1 WHERE id = ?2",
+        rusqlite::params![seconds, id],
+    )
+    .map_err(|e| format!("не удалось обновить длительность: {e}"))?;
+    Ok(())
+}
+
 /// Удаляет трек из библиотеки.
 ///
 /// Связи с альбомами уходят каскадом, поэтому чистить их отдельно не нужно.
@@ -559,6 +640,76 @@ mod tests {
         let (first, _) = two_tracks(&conn);
         delete_track(&conn, first).unwrap();
         assert!(delete_track(&conn, first).is_ok());
+    }
+
+    #[test]
+    fn overlapping_cuts_are_merged() {
+        // Две пересекающиеся метки дали бы ffmpeg противоречивые указания,
+        // а результат зависел бы от порядка нажатий.
+        let merged = normalize_cuts(&[
+            Cut { start: 30.0, end: 45.0 },
+            Cut { start: 40.0, end: 50.0 },
+        ]);
+        assert_eq!(merged, vec![Cut { start: 30.0, end: 50.0 }]);
+    }
+
+    #[test]
+    fn cuts_are_sorted_regardless_of_marking_order() {
+        let sorted = normalize_cuts(&[
+            Cut { start: 60.0, end: 70.0 },
+            Cut { start: 10.0, end: 20.0 },
+        ]);
+        assert_eq!(sorted.iter().map(|c| c.start).collect::<Vec<_>>(), vec![10.0, 60.0]);
+    }
+
+    #[test]
+    fn touching_cuts_become_one() {
+        let merged = normalize_cuts(&[
+            Cut { start: 10.0, end: 20.0 },
+            Cut { start: 20.0, end: 30.0 },
+        ]);
+        assert_eq!(merged, vec![Cut { start: 10.0, end: 30.0 }]);
+    }
+
+    #[test]
+    fn accidental_taps_are_discarded() {
+        // Случайное двойное нажатие даёт отрезок в миллисекунды — резать
+        // по нему нечего, а стык оно бы добавило.
+        assert!(normalize_cuts(&[Cut { start: 10.0, end: 10.01 }]).is_empty());
+    }
+
+    #[test]
+    fn separate_cuts_stay_separate() {
+        let cuts = normalize_cuts(&[
+            Cut { start: 10.0, end: 20.0 },
+            Cut { start: 50.0, end: 60.0 },
+        ]);
+        assert_eq!(cuts.len(), 2);
+    }
+
+    #[test]
+    fn cuts_survive_a_round_trip_through_the_database() {
+        let conn = memory_db();
+        let (first, _) = two_tracks(&conn);
+
+        set_cuts(&conn, first, &[Cut { start: 30.0, end: 45.0 }]).unwrap();
+
+        let track = find_by_id(&conn, first).unwrap().unwrap();
+        assert_eq!(track.cuts, vec![Cut { start: 30.0, end: 45.0 }]);
+    }
+
+    #[test]
+    fn original_is_remembered_only_once() {
+        // Второй раз путь не перезаписывается: иначе после второй резки
+        // «исходником» стал бы уже порезанный файл.
+        let conn = memory_db();
+        let (first, _) = two_tracks(&conn);
+
+        remember_original(&conn, first, "/tmp/первый.mp3").unwrap();
+        remember_original(&conn, first, "/tmp/второй.mp3").unwrap();
+
+        let track = find_by_id(&conn, first).unwrap().unwrap();
+        assert_eq!(track.original_path.as_deref(), Some("/tmp/первый.mp3"));
     }
 
     #[test]

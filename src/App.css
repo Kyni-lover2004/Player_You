@@ -1034,3 +1034,80 @@ code.job-error {
 }
 
 .track-act-danger:hover { color: var(--bad); }
+
+/* ── Резка треков ────────────────────────────────────── */
+
+.stage > .stage-cut {
+  position: absolute;
+  top: 18px;
+  right: 102px;
+  z-index: 2;
+}
+
+/* Полоса перемотки в обёртке: отметки вырезок ложатся поверх неё. */
+.seek-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.seek-wrap .seek { width: 100%; }
+
+/* Вырезанное показано прямо на шкале — видно, где дырки, не считая секунды. */
+.seek-cut {
+  position: absolute;
+  top: 50%;
+  height: 9px;
+  transform: translateY(-50%);
+  border-radius: 2px;
+  background: var(--bad);
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.cutter {
+  width: min(420px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.cutter-row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+
+.cutter-from {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.cutter-list { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.cutter-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 6px 4px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cutter-drop {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.cutter-drop:hover { color: var(--bad); }
+
+.cutter-note { margin: 0; font-size: 11px; line-height: 1.45; color: var(--muted); }

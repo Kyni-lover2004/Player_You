@@ -29,7 +29,12 @@ type Track = {
   added_at: number;
   missing: boolean;
   edited: boolean;
+  cuts: Cut[];
+  original_path: string | null;
 };
+
+/** Отрезок, вырезанный из трека. */
+type Cut = { start: number; end: number };
 
 /** Альбом — сборник, собранный руками из треков коллекции. */
 type Album = {
@@ -205,6 +210,9 @@ function App() {
   const [openError, setOpenError] = useState<number | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
+  const [cutting, setCutting] = useState(false);
+  const [cutFrom, setCutFrom] = useState<number | null>(null);
+  const [applying, setApplying] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
 
@@ -429,6 +437,47 @@ function App() {
     saveCustomThemes(next);
     setDraft(null);
     if (theme.id === id) chooseTheme(THEMES[0]);
+  }
+
+  /** Сохраняет список вырезок трека. */
+  async function saveCuts(id: number, cuts: Cut[]) {
+    try {
+      applyUpdate(await invoke<Track>("set_track_cuts", { id, cuts }));
+    } catch (error) {
+      setStatus({ kind: "error", message: String(error) });
+    }
+  }
+
+  /** Отмечает конец вырезки и добавляет её к списку. */
+  function finishCut(track: Track) {
+    if (cutFrom === null) return;
+    const [start, end] = [cutFrom, player.position].sort((a, b) => a - b);
+    setCutFrom(null);
+    void saveCuts(track.id, [...track.cuts, { start, end }]);
+  }
+
+  /** Режет файл по отмеченному. */
+  async function applyCuts(id: number) {
+    setApplying(true);
+    try {
+      applyUpdate(await invoke<Track>("apply_track_cuts", { id }));
+    } catch (error) {
+      setStatus({ kind: "error", message: String(error) });
+    } finally {
+      setApplying(false);
+    }
+  }
+
+  /** Возвращает трек к скачанному состоянию. */
+  async function resetCuts(id: number) {
+    setApplying(true);
+    try {
+      applyUpdate(await invoke<Track>("reset_track_cuts", { id }));
+    } catch (error) {
+      setStatus({ kind: "error", message: String(error) });
+    } finally {
+      setApplying(false);
+    }
   }
 
   /**
@@ -1114,6 +1163,17 @@ function App() {
         )}
 
         <button
+          className={`icon stage-cut ${cutting ? "on" : ""}`}
+          onClick={() => {
+            setCutting((on) => !on);
+            setCutFrom(null);
+          }}
+          title="Вырезать лишнее"
+        >
+          ✂
+        </button>
+
+        <button
           className="icon stage-help"
           onClick={() => setHelpOpen(true)}
           title="Клавиши"
@@ -1213,6 +1273,18 @@ function App() {
 
             <div className="scrub">
               <span className="time">{formatTime(player.position)}</span>
+              <span className="seek-wrap">
+                {player.duration > 0 &&
+                  current.cuts.map((cut, index) => (
+                    <span
+                      key={index}
+                      className="seek-cut"
+                      style={{
+                        left: `${(cut.start / player.duration) * 100}%`,
+                        width: `${((cut.end - cut.start) / player.duration) * 100}%`,
+                      }}
+                    />
+                  ))}
               <input
                 className="seek"
                 style={{ "--progress": `${progress}%` } as React.CSSProperties}
@@ -1227,6 +1299,7 @@ function App() {
                 onPointerUp={(e) => commitSeek(Number((e.target as HTMLInputElement).value))}
                 onKeyUp={(e) => commitSeek(Number((e.target as HTMLInputElement).value))}
               />
+              </span>
               <span className="time">{formatTime(player.duration)}</span>
 
               <button
@@ -1254,6 +1327,76 @@ function App() {
               />
             </div>
 
+
+            {cutting && (
+              <div className="cutter">
+                <div className="cutter-row">
+                  {cutFrom === null ? (
+                    <button className="mini" onClick={() => setCutFrom(player.position)}>
+                      Начало вырезки
+                    </button>
+                  ) : (
+                    <>
+                      <span className="cutter-from">с {formatTime(cutFrom)}</span>
+                      <button className="mini primary" onClick={() => finishCut(current)}>
+                        Конец здесь
+                      </button>
+                      <button className="mini" onClick={() => setCutFrom(null)}>
+                        Отмена
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                {current.cuts.length > 0 && (
+                  <div className="cutter-list">
+                    {current.cuts.map((cut, index) => (
+                      <span key={index} className="cutter-item">
+                        {formatTime(cut.start)} — {formatTime(cut.end)}
+                        <button
+                          className="cutter-drop"
+                          title="Убрать отметку"
+                          onClick={() =>
+                            saveCuts(
+                              current.id,
+                              current.cuts.filter((_, i) => i !== index)
+                            )
+                          }
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                <p className="cutter-note">
+                  {current.cuts.length > 0
+                    ? "Отмеченное уже пропускается при проигрывании. Послушай — и применяй."
+                    : "Доведи ползунок до начала лишнего куска и отметь. Файл до применения не меняется."}
+                </p>
+
+                <div className="cutter-row">
+                  <button
+                    className="mini primary"
+                    onClick={() => applyCuts(current.id)}
+                    disabled={applying || current.cuts.length === 0}
+                  >
+                    {applying ? "Режу…" : "Применить к файлу"}
+                  </button>
+                  {current.original_path && (
+                    <button
+                      className="mini ghost"
+                      onClick={() => resetCuts(current.id)}
+                      disabled={applying}
+                    >
+                      Вернуть скачанное
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
             {(player.queueLength > 0 || player.atEnd) && (
               <p className="stage-hint">
                 {player.atEnd
@@ -1266,7 +1409,19 @@ function App() {
                 сигнал начать трек с нуля, и React тут только мешал бы. */}
             <audio
               {...player.audioProps}
-              onTimeUpdate={(e) => !scrubbing && player.setPosition(e.currentTarget.currentTime)}
+              onTimeUpdate={(e) => {
+                const audio = e.currentTarget;
+                // Отмеченное перепрыгивается на лету: результат слышен до
+                // того, как файл будет тронут.
+                const inside = current?.cuts.find(
+                  (cut) => audio.currentTime >= cut.start && audio.currentTime < cut.end - 0.05
+                );
+                if (inside) {
+                  audio.currentTime = inside.end;
+                  return;
+                }
+                if (!scrubbing) player.setPosition(audio.currentTime);
+              }}
             />
           </>
         ) : (

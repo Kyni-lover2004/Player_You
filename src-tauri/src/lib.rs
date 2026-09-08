@@ -1,3 +1,4 @@
+mod audio;
 mod db;
 mod downloads;
 mod titles;
@@ -188,6 +189,111 @@ fn delete_track(app: tauri::AppHandle, id: i64) -> Result<Vec<db::Track>, String
     db::all_tracks(&conn)
 }
 
+// ── Резка треков ─────────────────────────────────────────
+//
+// Метки всегда относятся к тому, что человек слышит, то есть к текущему
+// файлу. Резать из исходника было бы неверно: у порезанного файла своя
+// шкала времени, и вторая правка попала бы совсем не туда.
+
+/// Запоминает отмеченные вырезки. Файл при этом не трогается: плеер просто
+/// перепрыгивает отмеченное, чтобы человек услышал результат до применения.
+#[tauri::command]
+fn set_track_cuts(
+    app: tauri::AppHandle,
+    id: i64,
+    cuts: Vec<db::Cut>,
+) -> Result<db::Track, String> {
+    let state = app.state::<Library>();
+    let conn = state.0.lock().map_err(|_| "библиотека занята")?;
+
+    db::set_cuts(&conn, id, &cuts)?;
+    db::find_by_id(&conn, id)?.ok_or_else(|| "трек не найден".into())
+}
+
+/// Режет файл по отмеченным вырезкам.
+///
+/// Перед первой резкой откладывается копия скачанного файла — тогда сброс
+/// возвращает трек мгновенно, без перекачивания с YouTube.
+#[tauri::command]
+async fn apply_track_cuts(app: tauri::AppHandle, id: i64) -> Result<db::Track, String> {
+    let (file_path, cuts, original) = {
+        let state = app.state::<Library>();
+        let conn = state.0.lock().map_err(|_| "библиотека занята")?;
+        let track = db::find_by_id(&conn, id)?.ok_or("трек не найден")?;
+        (track.file_path, track.cuts, track.original_path)
+    };
+
+    if cuts.is_empty() {
+        return Err("нечего вырезать".into());
+    }
+
+    let duration = tauri::async_runtime::spawn_blocking(move || {
+        let file = std::path::PathBuf::from(&file_path);
+
+        // Копию скачанного откладываем только один раз.
+        let backup = if original.is_none() {
+            let backup = audio::original_path_for(&file);
+            std::fs::copy(&file, &backup)
+                .map_err(|e| format!("не удалось сохранить исходник: {e}"))?;
+            Some(backup.to_string_lossy().to_string())
+        } else {
+            None
+        };
+
+        let duration = audio::apply_cuts(&file, &file, &cuts)?;
+        Ok::<_, String>((duration, backup))
+    })
+    .await
+    .map_err(|e| format!("резка прервалась: {e}"))??;
+
+    let (seconds, backup) = duration;
+
+    let state = app.state::<Library>();
+    let conn = state.0.lock().map_err(|_| "библиотека занята")?;
+
+    if let Some(path) = backup {
+        db::remember_original(&conn, id, &path)?;
+    }
+    // Файл теперь и есть результат — метки больше не нужны, иначе плеер
+    // стал бы перепрыгивать уже вырезанное во второй раз.
+    db::set_cuts(&conn, id, &[])?;
+    db::set_duration(&conn, id, seconds)?;
+
+    db::find_by_id(&conn, id)?.ok_or_else(|| "трек не найден".into())
+}
+
+/// Возвращает трек к скачанному состоянию.
+#[tauri::command]
+async fn reset_track_cuts(app: tauri::AppHandle, id: i64) -> Result<db::Track, String> {
+    let (file_path, original) = {
+        let state = app.state::<Library>();
+        let conn = state.0.lock().map_err(|_| "библиотека занята")?;
+        let track = db::find_by_id(&conn, id)?.ok_or("трек не найден")?;
+        (track.file_path, track.original_path)
+    };
+
+    let original = original.ok_or("трек ещё не резали, возвращать нечего")?;
+
+    let seconds = tauri::async_runtime::spawn_blocking(move || {
+        std::fs::copy(&original, &file_path)
+            .map_err(|e| format!("не удалось вернуть исходник: {e}"))?;
+        audio::apply_cuts(
+            std::path::Path::new(&file_path),
+            std::path::Path::new(&file_path),
+            &[],
+        )
+    })
+    .await
+    .map_err(|e| format!("возврат прервался: {e}"))??;
+
+    let state = app.state::<Library>();
+    let conn = state.0.lock().map_err(|_| "библиотека занята")?;
+    db::set_cuts(&conn, id, &[])?;
+    db::set_duration(&conn, id, seconds)?;
+
+    db::find_by_id(&conn, id)?.ok_or_else(|| "трек не найден".into())
+}
+
 /// Приводит поле формы к значению для базы: пустая строка означает «не задано».
 fn normalize_field(value: Option<String>) -> Option<String> {
     value
@@ -330,6 +436,9 @@ pub fn run() {
             clear_finished_downloads,
             library,
             delete_track,
+            set_track_cuts,
+            apply_track_cuts,
+            reset_track_cuts,
             save_track_title,
             reset_track_title,
             albums,

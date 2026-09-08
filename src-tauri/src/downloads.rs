@@ -214,7 +214,7 @@ pub fn resolve_binary(name: &str) -> Result<PathBuf, String> {
 /// Само приложение консоль не открывает — за это отвечает windows_subsystem
 /// в main.rs. Но каждый запуск подпроцесса вылезает отдельным чёрным окном,
 /// и на плейлисте из полусотни треков это полсотни вспышек.
-fn quiet_command(program: &Path) -> Command {
+pub(crate) fn quiet_command(program: &Path) -> Command {
     #[allow(unused_mut)]
     let mut command = Command::new(program);
 
