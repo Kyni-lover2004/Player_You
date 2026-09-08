@@ -70,11 +70,18 @@ function plural(count: number): string {
   return "треков";
 }
 
-/** Превращает секунды в м:сс. */
+/**
+ * Превращает секунды в мм:сс.
+ *
+ * Минуты с ведущим нулём: односимвольные выглядят обрубленными, а ещё от
+ * них дёргается вся строка на переходе с 9:59 на 10:00.
+ */
 function formatTime(seconds: number): string {
-  if (!Number.isFinite(seconds)) return "0:00";
+  if (!Number.isFinite(seconds)) return "00:00";
   const total = Math.floor(seconds);
-  return `${Math.floor(total / 60)}:${(total % 60).toString().padStart(2, "0")}`;
+  const minutes = Math.floor(total / 60).toString().padStart(2, "0");
+  const rest = (total % 60).toString().padStart(2, "0");
+  return `${minutes}:${rest}`;
 }
 
 /** Обложка трека в списке либо заглушка, если её ещё нет. */
