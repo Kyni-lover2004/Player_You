@@ -1335,6 +1335,24 @@ function App() {
             </div>
 
 
+            {!cutting && current.cuts.length > 0 && (
+              <div className="pending-cuts">
+                <span>
+                  Отмечено к вырезке: {current.cuts.length}. Пока только помечено — файл цел.
+                </span>
+                <button
+                  className="mini primary"
+                  onClick={() => applyCuts(current.id)}
+                  disabled={applying}
+                >
+                  {applying ? "Режу…" : "Применить"}
+                </button>
+                <button className="mini" onClick={() => setCutting(true)}>
+                  Править
+                </button>
+              </div>
+            )}
+
             {cutting && (
               <div className="cutter">
                 <div className="cutter-row">
